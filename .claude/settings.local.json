@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(cmd:*)",
+      "Bash(powershell Get-ChildItem -Recurse | Select-Object FullName:*)",
+      "Bash(powershell:*)",
+      "Bash(cd D:\\\\full-self-crawl-agent:*)"
+    ]
+  }
+}
