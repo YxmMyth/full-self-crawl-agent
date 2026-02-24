@@ -1,0 +1,86 @@
+# 示例 3: 房产信息爬取
+
+task_id: "task_real_estate_001"
+task_name: "房产信息爬取"
+created_at: "2026-02-25T00:00:00"
+version: "1.0"
+
+# 无限滚动
+extraction_type: "infinite_scroll"
+
+targets:
+  - name: "properties"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: ".property-title"
+        required: true
+        description: "房产标题"
+      - name: "price"
+        type: "number"
+        selector: ".property-price"
+        required: true
+        description: "价格"
+      - name: "area"
+        type: "text"
+        selector: ".property-area"
+        required: true
+        description: "面积"
+      - name: "location"
+        type: "text"
+        selector: ".property-location"
+        required: true
+        description: "位置"
+      - name: "bedrooms"
+        type: "number"
+        selector: ".bedrooms"
+        required: false
+        description: "卧室数量"
+      - name: "bathrooms"
+        type: "number"
+        selector: ".bathrooms"
+        required: false
+        description: "卫生间数量"
+      - name: "image"
+        type: "url"
+        selector: ".property-image"
+        attribute: "src"
+        required: true
+        description: "图片"
+      - name: "contact"
+        type: "text"
+        selector: ".contact-info"
+        required: false
+        description: "联系方式"
+      - name: "description"
+        type: "text"
+        selector: ".property-description"
+        required: false
+        description: "描述"
+
+# 起始页面
+start_url: "https://example.com/properties"
+
+# 限制
+max_pages: 200
+depth_limit: 3
+
+# 验证规则
+validation_rules:
+  price:
+    - ">0"
+  area:
+    - "len(5)"
+
+# 反爬策略
+anti_bot:
+  random_delay:
+    min: 2
+    max: 4
+  user_agent_rotation: true
+
+# 完成标准
+completion_criteria:
+  min_items: 100
+  quality_threshold: 0.8
+  max_error_rate: 0.2

@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # 开发环境
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/app
+      - ./evidence:/app/evidence
+      - ./states:/app/states
+    environment:
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - LLM_MODEL=glm-4
+    stdin_open: true
+    tty: true
+
+  # 沙箱执行环境
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    volumes:
+      - ./evidence:/app/evidence
+      - ./states:/app/states
+    environment:
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - BROWSER_HEADLESS=true
+    network_mode: none  # 无网络访问
+    mem_limit: 512m  # 限制内存
+    cpus: 1.0  # 限制 CPU
+
+  # 生产环境（可选）
+  production:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    volumes:
+      - ./evidence:/app/evidence
+      - ./states:/app/states
+    environment:
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - LLM_MODEL=glm-4
+      - BROWSER_HEADLESS=true
+    mem_limit: 1g
+    cpus: 2.0
+    restart: unless-stopped
+
+volumes:
+  evidence:
+  states:

@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 环境
+.env
+.venv/
+venv/
+ENV/
+env/
+
+# 项目
+evidence/
+states/
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 编辑器备份
+.DS_Store
+Thumbs.db
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 包管理
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 运行时
+*.pid
+*.pid.lock
+
+# Docker
+.dockerignore
+
+# 临时文件
+*.tmp
+*.temp
+tmp/
+temp/

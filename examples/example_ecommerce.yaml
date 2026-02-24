@@ -1,0 +1,74 @@
+# 示例 1: 电商平台产品爬取
+
+task_id: "task_ecommerce_001"
+task_name: "电商产品信息爬取"
+created_at: "2026-02-25T00:00:00"
+version: "1.0"
+
+# 单页提取
+extraction_type: "single_page"
+
+targets:
+  - name: "products"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: ".product-title"
+        required: true
+        description: "产品标题"
+      - name: "price"
+        type: "number"
+        selector: ".price"
+        required: true
+        description: "产品价格"
+      - name: "image"
+        type: "url"
+        selector: ".product-image img"
+        attribute: "src"
+        required: true
+        description: "产品图片"
+      - name: "rating"
+        type: "number"
+        selector: ".rating"
+        required: false
+        description: "产品评分"
+      - name: "sales"
+        type: "number"
+        selector: ".sales-count"
+        required: false
+        description: "销售数量"
+      - name: "description"
+        type: "text"
+        selector: ".product-description"
+        required: false
+        description: "产品描述"
+
+# 起始页面
+start_url: "https://example.com/products"
+
+# 限制
+max_pages: 100
+depth_limit: 3
+
+# 验证规则
+validation_rules:
+  price:
+    - ">0"
+  title:
+    - "len(5)"
+
+# 反爬策略
+anti_bot:
+  random_delay:
+    min: 1
+    max: 3
+  user_agent_rotation: true
+  request_interval:
+    min: 1
+    max: 2
+
+# 完成标准
+completion_criteria:
+  min_items: 20
+  quality_threshold: 0.9
+  max_error_rate: 0.1
