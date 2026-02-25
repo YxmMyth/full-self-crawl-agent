@@ -22,6 +22,8 @@ wheels/
 
 # 环境
 .env
+.env.local
+.env.*.local
 .venv/
 venv/
 ENV/
