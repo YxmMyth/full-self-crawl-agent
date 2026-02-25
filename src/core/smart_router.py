@@ -1,405 +1,459 @@
 """
 智能路由 - 管理层
 三层决策模式：程序→规则→LLM
+
+根据 IMPLEMENTATION.md 第3.1节的完整设计，包括：
+1. 特征检测器 (FeatureDetector) - 程序快速分析
+2. 智能路由 (SmartRouter) - 三层决策模式
+3. 策略库和备选方案
 """
 
-from typing import Dict, Any, List, Optional, Tuple
-from enum import Enum
-from dataclasses import dataclass
+from typing import Dict, Any, List, Optional, Literal, Tuple
 from datetime import datetime
 import re
+import json
 
 
-class RouteDecision(str, Enum):
-    """路由决策"""
-    PROGRAM = "program"  # 程序判断（确定性）
-    RULE = "rule"  # 规则判断（启发式）
-    LLM = "llm"  # LLM 判断（模糊场景）
-    DELEGATE = "delegate"  # 委托给其他组件
+# ==================== 特征检测器 ====================
+
+class FeatureDetector:
+    """特征检测器 - 程序快速分析（<50ms）"""
+
+    def analyze(self, html: str, url: Optional[str] = None) -> Dict[str, Any]:
+        """
+        快速分析页面特征
+
+        返回包含以下字段的字典：
+        - has_login: 是否有登录表单
+        - has_pagination: 是否有分页
+        - is_spa: 是否是SPA应用
+        - anti_bot_level: 反爬等级
+        - page_type: 页面类型
+        - complexity: 复杂度评级
+        """
+        features = {
+            'has_login': self._detect_login_form(html),
+            'has_pagination': self._detect_pagination(html),
+            'is_spa': self._detect_spa(html),
+            'anti_bot_level': self._detect_anti_bot(html),
+        }
+
+        # 分析页面类型和复杂度
+        features['page_type'] = self._classify_page_type(features)
+        features['complexity'] = self._assess_complexity(features)
+
+        return features
+
+    def _detect_login_form(self, html: str) -> bool:
+        """检测是否有登录表单"""
+        login_patterns = [
+            r'<input[^>]+type=["\']?password["\']?[^>]*>',
+            r'<form[^>]+action=["\']?login["\']?[^>]*>',
+        ]
+        for pattern in login_patterns:
+            if re.search(pattern, html, re.IGNORECASE | re.MULTILINE):
+                return True
+        return False
+
+    def _detect_pagination(self, html: str) -> bool:
+        """检测是否有分页"""
+        pagination_patterns = [
+            r'page=\d+',
+            r'下一页|next\s*page',
+            r'pagination|分页',
+        ]
+        for pattern in pagination_patterns:
+            if re.search(pattern, html, re.IGNORECASE):
+                return True
+        return False
+
+    def _detect_spa(self, html: str) -> bool:
+        """检测是否是SPA"""
+        spa_indicators = ['fetch(', 'XMLHttpRequest', 'div id="app"', 'div id="root"']
+        lower_html = html.lower()
+        return any(indicator.lower() in lower_html for indicator in spa_indicators)
+
+    def _detect_anti_bot(self, html: str) -> str:
+        """检测反爬等级"""
+        lower_html = html.lower()
+        if any(keyword in lower_html for keyword in ['cloudflare', 'recaptcha', 'captcha', 'turnstile']):
+            return 'high'
+        elif any(keyword in lower_html for keyword in ['user-agent', 'referer', 'csrf']):
+            return 'medium'
+        return 'none'
+
+    def _classify_page_type(self, features: Dict[str, Any]) -> str:
+        """分类页面类型"""
+        if features.get('is_spa'):
+            return 'spa'
+        elif features.get('has_login'):
+            return 'interactive'
+        else:
+            return 'static'
+
+    def _assess_complexity(self, features: Dict[str, Any]) -> str:
+        """评估复杂度"""
+        score = 0
+        if features.get('is_spa'):
+            score += 2
+        if features.get('has_login'):
+            score += 2
+        if features.get('anti_bot_level') == 'high':
+            score += 2
+        elif features.get('anti_bot_level') == 'medium':
+            score += 1
+
+        if score >= 4:
+            return 'complex'
+        elif score >= 2:
+            return 'medium'
+        else:
+            return 'simple'
 
 
-@dataclass
-class RouteResult:
-    """路由结果"""
-    decision: RouteDecision  # 决策类型
-    target: str  # 目标组件
-    confidence: float  # 置信度 (0-1)
-    reasoning: str  # 推理过程
-    timestamp: datetime
-
+# ==================== 智能路由 ====================
 
 class SmartRouter:
     """
-    智能路由核心
+    智能路由 - 混合判断核心
 
     三层决策模式：
-    1. 程序层：确定性判断（高效、准确）
-    2. 规则层：启发式规则（平衡效率与灵活性）
-    3. LLM层：语义理解（处理模糊场景）
+    1. 程序快速判断（<50ms）- 规则明确、效率优先
+    2. 规则引擎判断（<500ms）- 多条件组合、模式匹配
+    3. LLM深度分析（2-3秒）- 语义理解、策略生成
 
-    路由目标：
-    - 7种智能体：Sense/Plan/Act/Verify/Judge/Explore/Reflect
-    - 验证层组件
-    - 执行层组件
-    - 工具层组件
+    根据 IMPLEMENTATION.md 第3.1.2节实现
     """
 
+    # 策略库
+    STRATEGY_LIBRARY = {
+        'direct_crawl': {
+            'name': 'direct_crawl',
+            'capabilities': ['sense', 'plan', 'act', 'verify'],
+            'expected_success_rate': 0.95,
+            'complexity': 'simple',
+        },
+        'pagination_crawl': {
+            'name': 'pagination_crawl',
+            'capabilities': ['sense', 'plan', 'act', 'verify', 'handle_pagination'],
+            'expected_success_rate': 0.85,
+            'complexity': 'medium',
+        },
+        'spa_crawl': {
+            'name': 'spa_crawl',
+            'capabilities': ['sense', 'handle_spa', 'api_extract', 'verify'],
+            'expected_success_rate': 0.70,
+            'complexity': 'complex',
+        },
+        'login_required': {
+            'name': 'login_required',
+            'capabilities': ['detect_login', 'handle_login', 'sense', 'plan', 'act', 'verify'],
+            'expected_success_rate': 0.60,
+            'complexity': 'complex',
+        },
+        'strong_anti_bot': {
+            'name': 'strong_anti_bot',
+            'capabilities': ['sense', 'handle_anti_bot', 'slow_plan', 'act', 'verify'],
+            'expected_success_rate': 0.50,
+            'complexity': 'extremely_complex',
+        },
+    }
+
     def __init__(self, llm_client: Optional[Any] = None):
-        self.llm_client = llm_client
-        self._load_program_rules()
-        self._load_heuristic_rules()
-
-    def route(self, context: Dict[str, Any], task_type: str) -> RouteResult:
         """
-        执行路由决策
-
-        路由流程：
-        1. 程序判断 → 2. 规则判断 → 3. LLM 判断
+        初始化智能路由
 
         Args:
-            context: 路由上下文
-            task_type: 任务类型
+            llm_client: LLM客户端，用于LLM深度分析
+        """
+        self.llm_client = llm_client
+        self.feature_detector = FeatureDetector()
+        self.program_decisions = 0
+        self.rule_decisions = 0
+        self.llm_decisions = 0
+
+    async def route(
+        self,
+        url: str,
+        goal: str,
+        html: Optional[str] = None,
+        use_llm: bool = True
+    ) -> Dict[str, Any]:
+        """
+        路由决策 - 三层决策模式
+
+        Args:
+            url: 目标URL
+            goal: 用户目标
+            html: 页面HTML内容（可选）
+            use_llm: 是否使用LLM深度分析
 
         Returns:
-            RouteResult: 路由结果
+            路由决策字典，包含：
+            - strategy: 策略名称
+            - capabilities: 需要的能力列表
+            - expected_success_rate: 预期成功率
+            - complexity: 复杂度
+            - page_type: 页面类型
+            - special_requirements: 特殊需求
+            - decided_at: 决策时间
+            - decision_duration: 决策耗时（秒）
         """
-        # 第1层：程序判断
-        program_result = self._program_route(context, task_type)
-        if program_result:
-            return program_result
+        from datetime import datetime
+        start_time = datetime.now()
 
-        # 第2层：规则判断
-        rule_result = self._rule_route(context, task_type)
-        if rule_result:
-            return rule_result
+        # ========== 第1级：程序快速判断（<50ms）==========
+        if html:
+            features = self.feature_detector.analyze(html, url)
+        else:
+            features = {}
 
-        # 第3层：LLM 判断
-        llm_result = self._llm_route(context, task_type)
-        return llm_result
+        # 简单场景直接返回
+        if features.get('complexity') == 'simple' and not use_llm:
+            strategy = self.STRATEGY_LIBRARY['direct_crawl'].copy()
+            self.program_decisions += 1
+        else:
+            # ========== 第2级：规则引擎 ==========
+            strategy = self._match_from_library(features, goal)
 
-    def _program_route(self, context: Dict[str, Any], task_type: str) -> Optional[RouteResult]:
-        """第1层：程序判断 - 确定性场景"""
-        # 场景1：页面结构清晰，选择器明确
-        if self._is_clear_structure(context):
-            return RouteResult(
-                decision=RouteDecision.PROGRAM,
-                target="ActAgent",
-                confidence=0.95,
-                reasoning="页面结构清晰，可直接执行提取",
-                timestamp=datetime.now()
-            )
+            if strategy.get('complexity') in ['complex', 'extremely_complex'] and use_llm:
+                # ========== 第3级：LLM深度分析（2-3秒）==========
+                strategy = await self._generate_with_llm(features, goal, html)
+                self.llm_decisions += 1
+            else:
+                self.rule_decisions += 1
 
-        # 场景2：需要感知页面结构
-        if self._need_sense_page(context):
-            return RouteResult(
-                decision=RouteDecision.PROGRAM,
-                target="SenseAgent",
-                confidence=0.95,
-                reasoning="需要先感知页面结构",
-                timestamp=datetime.now()
-            )
+        # ========== 程序验证 ==========
+        if not self._validate_strategy(strategy):
+            strategy = self._fallback_strategy(features)
 
-        # 场景3：需要探索页面
-        if self._need_explore(context):
-            return RouteResult(
-                decision=RouteDecision.PROGRAM,
-                target="ExploreAgent",
-                confidence=0.90,
-                reasoning="需要探索页面链接和结构",
-                timestamp=datetime.now()
-            )
+        # 记录决策
+        decision_duration = (datetime.now() - start_time).total_seconds()
 
-        # 场景4：数据已提取，需要验证
-        if self._need_verify(context):
-            return RouteResult(
-                decision=RouteDecision.PROGRAM,
-                target="VerifyAgent",
-                confidence=0.95,
-                reasoning="数据已提取，需要验证质量",
-                timestamp=datetime.now()
-            )
+        decision = {
+            'strategy': strategy['name'],
+            'capabilities': strategy['capabilities'],
+            'expected_success_rate': strategy['expected_success_rate'],
+            'complexity': features.get('complexity', 'simple'),
+            'page_type': features.get('page_type', 'unknown'),
+            'special_requirements': self._extract_requirements(features),
+            'execution_params': strategy.get('params', {}),
+            'fallback_strategies': strategy.get('fallback_strategies', []),
+            'decided_at': datetime.now().isoformat(),
+            'decision_duration': decision_duration,
+        }
 
-        return None
+        return decision
 
-    def _rule_route(self, context: Dict[str, Any], task_type: str) -> Optional[RouteResult]:
-        """第2层：规则判断 - 启发式场景"""
-        # 规则1：错误次数过多，需要反思
-        if context.get('error_count', 0) > 3:
-            return RouteResult(
-                decision=RouteDecision.RULE,
-                target="ReflectAgent",
-                confidence=0.85,
-                reasoning="错误次数过多，需要反思策略",
-                timestamp=datetime.now()
-            )
+    async def _generate_with_llm(
+        self,
+        features: Dict[str, Any],
+        goal: str,
+        html: Optional[str]
+    ) -> Dict[str, Any]:
+        """使用LLM生成策略"""
+        if self.llm_client is None:
+            return self._match_from_library(features, goal)
 
-        # 规则2：提取数据量不足，需要调整策略
-        extracted_count = context.get('extracted_count', 0)
-        target_count = context.get('target_count', 10)
-        if extracted_count < target_count * 0.5:
-            return RouteResult(
-                decision=RouteDecision.RULE,
-                target="PlanAgent",
-                confidence=0.80,
-                reasoning="数据量不足，需要重新规划",
-                timestamp=datetime.now()
-            )
+        html_sample = (html or '')[:5000] if html else ''
 
-        # 规则3：页面结构复杂，需要智能规划
-        if self._is_complex_structure(context):
-            return RouteResult(
-                decision=RouteDecision.RULE,
-                target="PlanAgent",
-                confidence=0.75,
-                reasoning="页面结构复杂，需要智能规划",
-                timestamp=datetime.now()
-            )
+        prompt = f"""
+# 任务分析
+{json.dumps(features, indent=2, ensure_ascii=False)}
 
-        # 规则4：需要做出决策判断
-        if self._need_judgment(context):
-            return RouteResult(
-                decision=RouteDecision.RULE,
-                target="JudgeAgent",
-                confidence=0.80,
-                reasoning="需要做出关键决策",
-                timestamp=datetime.now()
-            )
+# 用户目标
+{goal}
 
-        return None
+# 页面片段（前5000字符）
+```html
+{html_sample}
+```
 
-    def _llm_route(self, context: Dict[str, Any], task_type: str) -> RouteResult:
-        """第3层：LLM 判断 - 模糊场景"""
-        if not self.llm_client:
-            # 如果没有 LLM 客户端，降级到默认策略
-            return RouteResult(
-                decision=RouteDecision.LLM,
-                target="SenseAgent",
-                confidence=0.60,
-                reasoning="降级到默认策略：先感知页面",
-                timestamp=datetime.now()
-            )
+# 请生成最适合的爬取策略
 
-        # 构建 LLM 提示
-        prompt = self._build_llm_prompt(context, task_type)
+考虑以下方面：
+1. 推荐使用哪些能力（从7种中选择：sense, plan, act, verify, judge, explore, reflect）
+2. 具体的执行步骤
+3. 可能遇到的挑战
+4. 应对策略
+5. 预期成功率（0.0-1.0）
 
-        # 调用 LLM
-        try:
-            response = self.llm_client.generate(
-                prompt=prompt,
-                max_tokens=200,
-                temperature=0.3
-            )
-            return self._parse_llm_response(response)
-        except Exception as e:
-            # LLM 调用失败，降级处理
-            return RouteResult(
-                decision=RouteDecision.LLM,
-                target="SenseAgent",
-                confidence=0.50,
-                reasoning=f"LLM 调用失败: {str(e)}，降级到默认策略",
-                timestamp=datetime.now()
-            )
-
-    def _build_llm_prompt(self, context: Dict[str, Any], task_type: str) -> str:
-        """构建 LLM 提示"""
-        return f"""你是一个智能路由决策器。根据当前状态选择最合适的处理组件。
-
-当前上下文:
-- 任务类型: {task_type}
-- 当前状态: {context.get('current_state', 'unknown')}
-- 已提取数据: {context.get('extracted_count', 0)} 条
-- 错误次数: {context.get('error_count', 0)}
-- 页面类型: {context.get('page_type', 'unknown')}
-
-可选组件:
-1. SenseAgent - 感知页面结构和特征
-2. PlanAgent - 规划提取策略
-3. ActAgent - 执行提取操作
-4. VerifyAgent - 验证数据质量
-5. JudgeAgent - 做出决策判断
-6. ExploreAgent - 探索页面链接
-7. ReflectAgent - 反思和优化策略
-
-请根据当前情况选择最合适的组件，并说明理由。
-
-格式:
-组件: <组件名>
-置信度: <0-1>
-理由: <简短说明>
+# 输出格式（JSON）
+```json
+{{
+    "strategy": "策略名称",
+    "capabilities": ["能力1", "能力2"],
+    "steps": ["步骤1", "步骤2"],
+    "considerations": ["注意事项"],
+    "expected_success_rate": 0.8
+}}
+```
 """
 
-    def _parse_llm_response(self, response: str) -> RouteResult:
-        """解析 LLM 响应"""
-        # 简单解析（实际应用中应该使用更复杂的解析器）
         try:
-            lines = response.strip().split('\n')
-            target = "SenseAgent"
-            confidence = 0.7
-            reasoning = "LLM 推荐"
+            response = await self.llm_client.chat(prompt)
 
-            for line in lines:
-                if line.startswith('组件:'):
-                    target = line.split(':')[1].strip()
-                elif line.startswith('置信度:'):
-                    confidence = float(line.split(':')[1].strip())
-                elif line.startswith('理由:'):
-                    reasoning = line.split(':', 1)[1].strip()
+            # 解析响应
+            if '```json' in response:
+                json_str = response.split('```json')[1].split('```')[0]
+            elif '```' in response:
+                json_str = response.split('```')[1].split('```')[0]
+            else:
+                json_str = response
 
-            # 映射到实际组件名
-            target_map = {
-                '感知': 'SenseAgent',
-                '规划': 'PlanAgent',
-                '执行': 'ActAgent',
-                '验证': 'VerifyAgent',
-                '判断': 'JudgeAgent',
-                '探索': 'ExploreAgent',
-                '反思': 'ReflectAgent'
+            strategy_dict = json.loads(json_str)
+
+            return {
+                'name': strategy_dict.get('strategy', 'custom'),
+                'capabilities': strategy_dict.get('capabilities', ['sense', 'plan', 'act', 'verify']),
+                'expected_success_rate': strategy_dict.get('expected_success_rate', 0.7),
+                'params': {
+                    'steps': strategy_dict.get('steps', []),
+                    'considerations': strategy_dict.get('considerations', []),
+                }
             }
-            target = target_map.get(target, target)
 
-            return RouteResult(
-                decision=RouteDecision.LLM,
-                target=target,
-                confidence=confidence,
-                reasoning=reasoning,
-                timestamp=datetime.now()
-            )
-        except Exception:
-            return RouteResult(
-                decision=RouteDecision.LLM,
-                target="SenseAgent",
-                confidence=0.6,
-                reasoning="LLM 响应解析失败",
-                timestamp=datetime.now()
-            )
+        except Exception as e:
+            print(f"LLM生成策略失败: {e}")
+            return self._match_from_library(features, goal)
 
-    # ==================== 程序判断规则 ====================
+    def _match_from_library(self, features: Dict[str, Any], goal: str) -> Dict[str, Any]:
+        """从策略库中匹配策略"""
+        # 根据特征匹配策略
+        if features.get('has_login'):
+            return self.STRATEGY_LIBRARY['login_required'].copy()
 
-    def _is_clear_structure(self, context: Dict[str, Any]) -> bool:
-        """判断页面结构是否清晰"""
-        # 如果已经有明确的选择器定义
-        selectors = context.get('selectors', {})
-        if selectors and len(selectors) > 0:
-            return True
+        if features.get('is_spa'):
+            return self.STRATEGY_LIBRARY['spa_crawl'].copy()
 
-        # 如果页面类型已知且简单
-        page_type = context.get('page_type')
-        simple_types = ['list', 'table', 'card']
-        if page_type in simple_types:
-            return True
+        if features.get('has_pagination'):
+            return self.STRATEGY_LIBRARY['pagination_crawl'].copy()
 
-        # 如果之前已经成功提取过
-        success_count = context.get('success_count', 0)
-        if success_count > 0:
-            return True
+        if features.get('anti_bot_level') == 'high':
+            return self.STRATEGY_LIBRARY['strong_anti_bot'].copy()
 
-        return False
+        return self.STRATEGY_LIBRARY['direct_crawl'].copy()
 
-    def _need_sense_page(self, context: Dict[str, Any]) -> bool:
-        """判断是否需要感知页面"""
-        # 如果是新页面
-        if not context.get('page_analyzed', False):
-            return True
+    def _validate_strategy(self, strategy: Dict[str, Any]) -> bool:
+        """验证策略的有效性"""
+        if not strategy.get('name'):
+            return False
 
-        # 如果页面结构未知
-        if not context.get('page_structure'):
-            return True
+        if not strategy.get('capabilities'):
+            return False
 
-        # 如果选择器为空
-        selectors = context.get('selectors', {})
-        if not selectors:
-            return True
+        expected_rate = strategy.get('expected_success_rate', 0)
+        if not (0 <= expected_rate <= 1):
+            return False
 
-        return False
+        # 验证能力合理性
+        valid_capabilities = {'sense', 'plan', 'act', 'verify', 'judge', 'explore', 'reflect',
+                              'handle_login', 'handle_spa', 'handle_anti_bot', 'handle_pagination',
+                              'detect_login', 'api_extract', 'slow_plan'}
 
-    def _need_explore(self, context: Dict[str, Any]) -> bool:
-        """判断是否需要探索页面"""
-        # 如果需要多页提取
-        task_type = context.get('task_type')
-        if task_type in ['multi_page', 'pagination', 'infinite_scroll']:
-            extracted_count = context.get('extracted_count', 0)
-            target_count = context.get('target_count', 10)
-            if extracted_count < target_count:
-                return True
+        capabilities = strategy.get('capabilities', [])
+        return all(cap in valid_capabilities for cap in capabilities)
 
-        # 如果有未访问的链接
-        if context.get('has_more_links', False):
-            return True
+    def _fallback_strategy(self, features: Dict[str, Any]) -> Dict[str, Any]:
+        """备选策略"""
+        return {
+            'name': 'fallback',
+            'capabilities': ['sense', 'plan', 'act', 'verify'],
+            'expected_success_rate': 0.5,
+            'params': {'retry_count': 3, 'timeout': 60},
+            'fallback_strategies': ['direct_crawl', 'pagination_crawl']
+        }
 
-        return False
-
-    def _need_verify(self, context: Dict[str, Any]) -> bool:
-        """判断是否需要验证"""
-        # 如果已提取数据
-        extracted_count = context.get('extracted_count', 0)
-        if extracted_count > 0:
-            # 如果还没有验证过
-            if not context.get('verified', False):
-                return True
-
-        return False
-
-    # ==================== 规则判断 ====================
-
-    def _is_complex_structure(self, context: Dict[str, Any]) -> bool:
-        """判断页面结构是否复杂"""
-        # 动态内容
-        if context.get('has_dynamic_content', False):
-            return True
-
-        # 嵌套层级深
-        depth = context.get('structure_depth', 0)
-        if depth > 3:
-            return True
-
-        # 字段数量多
-        field_count = context.get('field_count', 0)
-        if field_count > 10:
-            return True
-
-        # 有特殊结构（表格、树形等）
-        special_structures = context.get('special_structures', [])
-        if special_structures:
-            return True
-
-        return False
-
-    def _need_judgment(self, context: Dict[str, Any]) -> bool:
-        """判断是否需要做出判断"""
-        # 多个选择器候选
-        selector_candidates = context.get('selector_candidates', [])
-        if len(selector_candidates) > 1:
-            return True
-
-        # 数据质量存疑
-        quality_score = context.get('quality_score', 1.0)
-        if quality_score < 0.7:
-            return True
-
-        # 有冲突的证据
-        has_conflict = context.get('has_conflicting_evidence', False)
-        if has_conflict:
-            return True
-
-        return False
-
-    # ==================== 辅助方法 ====================
-
-    def _load_program_rules(self):
-        """加载程序判断规则"""
-        # 实际应用中可以从配置文件加载
-        pass
-
-    def _load_heuristic_rules(self):
-        """加载启发式规则"""
-        # 实际应用中可以从配置文件加载
-        pass
+    def _extract_requirements(self, features: Dict[str, Any]) -> List[str]:
+        """提取特殊需求"""
+        requirements = []
+        if features.get('has_login'):
+            requirements.append('login')
+        if features.get('is_spa'):
+            requirements.append('javascript')
+        if features.get('has_pagination'):
+            requirements.append('pagination')
+        if features.get('anti_bot_level') == 'high':
+            requirements.append('anti-bot-high')
+        elif features.get('anti_bot_level') == 'medium':
+            requirements.append('anti-bot-medium')
+        return requirements
 
     def get_routing_stats(self) -> Dict[str, Any]:
         """获取路由统计"""
+        total = self.program_decisions + self.rule_decisions + self.llm_decisions
         return {
-            'program_decisions': 0,
-            'rule_decisions': 0,
-            'llm_decisions': 0,
-            'delegate_decisions': 0
+            'program_decisions': self.program_decisions,
+            'rule_decisions': self.rule_decisions,
+            'llm_decisions': self.llm_decisions,
+            'total_decisions': total,
+            'program_ratio': self.program_decisions / total if total > 0 else 0,
+            'rule_ratio': self.rule_decisions / total if total > 0 else 0,
+            'llm_ratio': self.llm_decisions / total if total > 0 else 0,
         }
+
+
+# ==================== 能力动态组合 ====================
+
+def compose_capabilities(task_analysis: Dict[str, Any]) -> List[str]:
+    """
+    动态组合能力
+
+    根据 IMPLEMENTATION.md 第3.2.2节实现
+    """
+    capabilities = ['sense', 'plan', 'act', 'verify']
+
+    requirements = task_analysis.get('special_requirements', [])
+
+    if 'login' in requirements:
+        capabilities.insert(0, 'handle_login')
+
+    if 'pagination' in requirements:
+        capabilities.append('handle_pagination')
+
+    if 'javascript' in requirements:
+        capabilities.insert(1, 'handle_spa')
+
+    if 'anti-bot' in requirements:
+        capabilities.insert(1, 'handle_anti_bot')
+
+    return capabilities
+
+
+# ==================== 渐进式探索 ====================
+
+class ProgressiveExplorer:
+    """渐进式探索（从简单到复杂）"""
+
+    STRATEGY_ORDER = [
+        ('direct_crawl', 0.95),        # 简单页面
+        ('pagination_crawl', 0.85),    # 列表页
+        ('api_reverse', 0.70),         # SPA
+        ('login_required', 0.40),      # 需登录
+        ('headless_browser', 0.50),    # 复杂JS
+    ]
+
+    async def explore(self, url: str, goal: str, strategies=None):
+        """
+        渐进式探索
+
+        从简单到复杂尝试策略
+        """
+        if strategies is None:
+            strategies = self.STRATEGY_ORDER
+
+        for strategy_name, expected_rate in strategies:
+            # 这里应该调用实际的策略执行器
+            # 暂时返回模拟结果
+            result = {
+                'strategy': strategy_name,
+                'success': False,
+                'quality': 0.0,
+                'data': []
+            }
+
+            # 如果成功且质量达标，返回结果
+            if result.get('success') and result.get('quality', 0) >= 0.6:
+                return result
+
+        return {'success': False, 'error': '所有策略失败'}

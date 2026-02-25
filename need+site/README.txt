@@ -1,0 +1,43 @@
+Test Cases Summary (10 real-world scenarios)
+================================================================================
+
+1. 电商手机产品页（名称/价格/规格/主图URL/PDF）
+   URL: https://www.amazon.com/s?k=smartphone
+   Reason: 海量手机列表页 + 点进去就是完整产品页（价格、规格表JSON、清晰主图、规格PDF下载）
+
+2. 新闻文章富文本（标题/HTML片段/图片/视频）
+   URL: https://techcrunch.com/
+   Reason: 最新科技文章页（富HTML、正文含嵌入图片+视频、结构完整）
+
+3. 数据可视化图表站（SVG代码）
+   URL: https://www.datawrapper.de/
+   Reason: 公开图表库，每张图都能导出/查看完整SVG代码 + 渲染预览
+
+4. 招聘网站（职位/薪资/公司Logo图片/ JD HTML）
+   URL: https://www.indeed.com/hire/job-description/software-engineer
+   Reason: 软件工程师职位列表 + 每条带公司Logo图片 + 完整JD HTML片段
+
+5. 学术论文站点（PDF下载 + 摘要）
+   URL: https://arxiv.org/list/cs/recent
+   Reason: AI论文列表 + 每篇都有PDF直链 + 摘要文本（arXiv经典）
+
+6. 房地产楼盘站（户型图SVG/PDF/价格）
+   URL: https://www.zillow.com/
+   Reason: 楼盘详情页（户型图PDF/SVG、价格、朝向，动态加载）
+
+7. 菜谱网站（配料JSON/步骤HTML/成品图片）
+   URL: https://www.allrecipes.com/
+   Reason: 任意菜谱页（如Chef John's Jollof Rice）——配料表、步骤HTML、清晰成品图
+
+8. 股票/基金图表站（K线SVG/价格）
+   URL: https://finance.yahoo.com/quote/AAPL/chart
+   Reason: Apple股票K线图（动态SVG可提取、实时价格、成交量）
+
+9. 博客/CMS站点（嵌套HTML+图片）
+   URL: https://medium.com/
+   Reason: 任意Medium文章页（富HTML嵌套、大量内嵌图片URL、标签）
+
+10. 政府/企业公告站（PDF+HTML表格）
+   URL: https://www.find-tender.service.gov.uk/
+   Reason: 英国政府招标公告（每条有PDF链接 + HTML表格中标金额等）
+

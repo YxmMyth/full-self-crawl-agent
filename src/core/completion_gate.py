@@ -1,30 +1,12 @@
 """
 完成门禁检查器 - 战略层
 基于证据验证任务完成情况
+
+根据 IMPLEMENTATION.md 第2.1.3节的完整设计
 """
 
-from typing import Dict, Any, List, Optional, Tuple
-from dataclasses import dataclass
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from enum import Enum
-from .contracts import SpecContract, StateContract
-
-
-class GateStatus(str, Enum):
-    """门禁状态"""
-    PASSED = "passed"  # 通过
-    FAILED = "failed"  # 失败
-    PENDING = "pending"  # 待定
-
-
-@dataclass
-class GateDecision:
-    """门禁决策"""
-    status: GateStatus
-    evidence_quality: float  # 证据质量评分 (0-1)
-    reasons: List[str]  # 通过/失败原因
-    recommendations: List[str]  # 建议
-    timestamp: datetime
 
 
 class CompletionGate:
@@ -42,236 +24,337 @@ class CompletionGate:
     - 质量评估：评估提取数据的质量
     """
 
-    def __init__(self, spec: SpecContract):
-        self.spec = spec
-        self.completion_criteria = spec.completion_criteria
+    def __init__(self):
+        self.failed_gates = []
+        self.passed_gates = []
 
-    def check_completion(self, state: StateContract, evidence_data: Dict[str, Any]) -> GateDecision:
+    def check(self, state: Dict[str, Any], spec: Dict[str, Any]) -> bool:
         """
-        检查任务完成情况
+        检查是否满足完成门禁
 
         Args:
             state: 当前状态
-            evidence_data: 证据数据（包含提取的数据、截图等）
+            spec: Spec契约
 
         Returns:
-            GateDecision: 门禁决策
+            bool: 是否通过所有门禁
         """
-        reasons = []
-        recommendations = []
-        passed = True
+        self.failed_gates = []
+        self.passed_gates = []
 
-        # 1. 检查提取的数据量
-        if not self._check_data_quantity(state, reasons, recommendations):
-            passed = False
+        for gate_condition in spec.get('completion_gate', []):
+            if self._evaluate(gate_condition, state):
+                self.passed_gates.append(gate_condition)
+            else:
+                self.failed_gates.append(gate_condition)
 
-        # 2. 检查数据质量
-        quality_score = self._assess_data_quality(evidence_data, reasons, recommendations)
-        if quality_score < self._get_quality_threshold():
-            passed = False
-
-        # 3. 检查字段完整性
-        if not self._check_field_completeness(evidence_data, reasons, recommendations):
-            passed = False
-
-        # 4. 检查错误率
-        if not self._check_error_rate(state, reasons, recommendations):
-            passed = False
-
-        status = GateStatus.PASSED if passed else GateStatus.FAILED
-
-        return GateDecision(
-            status=status,
-            evidence_quality=quality_score,
-            reasons=reasons,
-            recommendations=recommendations,
-            timestamp=datetime.now()
-        )
-
-    def _check_data_quantity(self, state: StateContract, reasons: List[str],
-                            recommendations: List[str]) -> bool:
-        """检查数据量是否达标"""
-        min_items = self.completion_criteria.get('min_items', 10)
-        actual_items = len(state.extracted_data)
-
-        if actual_items < min_items:
-            reasons.append(f"数据量不足：期望 {min_items} 条，实际 {actual_items} 条")
-            recommendations.append(f"继续提取数据，至少需要 {min_items - actual_items} 条")
+        if self.failed_gates:
+            state['gate_failed'] = True
+            state['failed_gates'] = self.failed_gates
+            state['passed_gates'] = self.passed_gates
             return False
 
-        reasons.append(f"数据量达标：{actual_items} / {min_items} 条")
+        state['gate_passed'] = True
+        state['passed_gates'] = self.passed_gates
         return True
 
-    def _check_field_completeness(self, evidence_data: Dict[str, Any],
-                                   reasons: List[str],
-                                   recommendations: List[str]) -> bool:
-        """检查字段完整性"""
-        extracted_data = evidence_data.get('extracted_data', [])
-        if not extracted_data:
-            reasons.append("没有提取到任何数据")
-            return False
+    def _evaluate(self, condition: str, state: Dict[str, Any]) -> bool:
+        """
+        评估门禁条件
 
-        # 检查每个必填字段
-        missing_fields = set()
-        for item in extracted_data[:10]:  # 检查前10条
-            for target in self.spec.targets:
-                for field in target.fields:
-                    if field.required and field.name not in item:
-                        missing_fields.add(field.name)
+        支持的门禁条件：
+        - html_snapshot_exists: HTML快照存在
+        - sense_analysis_valid: 感知分析有效
+        - code_syntax_valid: 代码语法正确
+        - execution_success: 执行成功
+        - quality_score >= X: 质量分数 >= 阈值
+        - sample_count >= X: 样本数 >= 阈值
+        """
+        if condition == 'html_snapshot_exists':
+            return state.get('html_snapshot') is not None
 
-        if missing_fields:
-            reasons.append(f"缺少必填字段：{', '.join(missing_fields)}")
-            recommendations.append(f"检查选择器是否正确：{', '.join(missing_fields)}")
-            return False
+        elif condition == 'sense_analysis_valid':
+            analysis = state.get('sense_analysis')
+            return analysis is not None and len(analysis) > 0
 
-        reasons.append("所有必填字段完整")
-        return True
+        elif condition == 'code_syntax_valid':
+            return state.get('syntax_valid', False)
 
-    def _check_error_rate(self, state: StateContract, reasons: List[str],
-                          recommendations: List[str]) -> bool:
-        """检查错误率"""
-        total = state.progress.total_items
-        failed = state.progress.failed_items
+        elif condition == 'execution_success':
+            result = state.get('execution_result', {})
+            return result.get('success', False) and result.get('data') is not None
 
-        if total == 0:
-            return True  # 还没有开始提取
-
-        error_rate = failed / total
-        max_error_rate = self.completion_criteria.get('max_error_rate', 0.1)
-
-        if error_rate > max_error_rate:
-            reasons.append(f"错误率过高：{error_rate:.1%} (阈值 {max_error_rate:.1%})")
-            recommendations.append("检查页面结构是否发生变化")
-            return False
-
-        reasons.append(f"错误率正常：{error_rate:.1%}")
-        return True
-
-    def _assess_data_quality(self, evidence_data: Dict[str, Any],
-                             reasons: List[str],
-                             recommendations: List[str]) -> float:
-        """评估数据质量"""
-        extracted_data = evidence_data.get('extracted_data', [])
-
-        if not extracted_data:
-            return 0.0
-
-        # 质量评估维度：
-        # 1. 数据完整性
-        completeness_score = self._assess_completeness(extracted_data)
-
-        # 2. 数据一致性
-        consistency_score = self._assess_consistency(extracted_data)
-
-        # 3. 数据准确性（基于字段类型验证）
-        accuracy_score = self._assess_accuracy(extracted_data)
-
-        # 综合评分
-        quality_score = (
-            completeness_score * 0.4 +
-            consistency_score * 0.3 +
-            accuracy_score * 0.3
-        )
-
-        if quality_score >= self._get_quality_threshold():
-            reasons.append(f"数据质量良好：{quality_score:.2f}")
-        else:
-            reasons.append(f"数据质量不足：{quality_score:.2f}")
-            recommendations.append("优化选择器或调整提取策略")
-
-        return quality_score
-
-    def _assess_completeness(self, data: List[Dict[str, Any]]) -> float:
-        """评估数据完整性"""
-        if not data:
-            return 0.0
-
-        total_fields = sum(len(target.fields) for target in self.spec.targets)
-        required_fields = sum(
-            len([f for f in target.fields if f.required])
-            for target in self.spec.targets
-        )
-
-        if required_fields == 0:
-            return 1.0
-
-        filled_fields = 0
-        for item in data[:50]:  # 检查前50条
-            for target in self.spec.targets:
-                for field in target.fields:
-                    if field.required and item.get(field.name):
-                        filled_fields += 1
-
-        return min(1.0, filled_fields / (required_fields * min(50, len(data))))
-
-    def _assess_consistency(self, data: List[Dict[str, Any]]) -> float:
-        """评估数据一致性"""
-        if len(data) < 2:
-            return 1.0  # 单条数据视为一致
-
-        # 检查每条数据的字段数量是否一致
-        field_counts = [len(item) for item in data[:50]]
-        unique_counts = len(set(field_counts))
-
-        # 如果所有数据的字段数量相同，则一致性为1
-        if unique_counts == 1:
-            return 1.0
-
-        # 否则根据字段数量的变化程度评分
-        max_count = max(field_counts)
-        min_count = min(field_counts)
-        variation = (max_count - min_count) / max_count if max_count > 0 else 0
-
-        return 1.0 - variation
-
-    def _assess_accuracy(self, data: List[Dict[str, Any]]) -> float:
-        """评估数据准确性"""
-        if not data:
-            return 0.0
-
-        valid_count = 0
-        total_count = 0
-
-        for item in data[:50]:  # 检查前50条
-            for target in self.spec.targets:
-                for field in target.fields:
-                    value = item.get(field.name)
-                    if value is None:
-                        continue
-
-                    total_count += 1
-                    if self._validate_field_value(field, value):
-                        valid_count += 1
-
-        return valid_count / total_count if total_count > 0 else 0.0
-
-    def _validate_field_value(self, field: Any, value: Any) -> bool:
-        """验证字段值是否符合类型要求"""
-        # 简单的类型验证
-        if field.type == 'number':
+        elif condition.startswith('quality_score >='):
             try:
-                float(value)
-                return True
-            except (ValueError, TypeError):
+                threshold = float(condition.split('>=')[1].strip())
+                quality = state.get('quality_score', 0)
+                return quality >= threshold
+            except (ValueError, IndexError):
                 return False
-        elif field.type == 'date':
-            # 简单的日期格式检查
-            if isinstance(value, str):
-                return len(value) >= 8  # 至少8个字符
-            return isinstance(value, (str, datetime))
-        elif field.type == 'url':
-            return isinstance(value, str) and value.startswith(('http://', 'https://'))
-        else:
-            return value is not None
 
-    def _get_quality_threshold(self) -> float:
-        """获取质量阈值"""
-        return self.completion_criteria.get('quality_threshold', 0.9)
+        elif condition.startswith('sample_count >='):
+            try:
+                threshold = int(condition.split('>=')[1].strip())
+                data = state.get('sample_data', [])
+                return len(data) >= threshold
+            except (ValueError, IndexError):
+                return False
 
-    def get_completion_criteria(self) -> Dict[str, Any]:
-        """获取完成标准"""
-        return {
-            'min_items': self.completion_criteria.get('min_items', 10),
-            'quality_threshold': self.completion_criteria.get('quality_threshold', 0.9),
-            'max_error_rate': self.completion_criteria.get('max_error_rate', 0.1)
+        raise ValueError(f"Unknown gate condition: {condition}")
+
+    def get_failed_gates(self) -> List[str]:
+        """获取失败的门禁"""
+        return self.failed_gates
+
+    def get_passed_gates(self) -> List[str]:
+        """获取通过的门禁"""
+        return self.passed_gates
+
+
+class GateDecision:
+    """
+    门禁决策器 - 基于门禁检查结果做决策
+
+    根据 IMPLEMENTATION.md 第1.3.3节实现
+    """
+
+    def __init__(self):
+        self.completion_gate = CompletionGate()
+
+    def decide(self, state: Dict[str, Any], spec: Dict[str, Any]) -> str:
+        """
+        门禁决策
+
+        返回决策类型：
+        - "complete": 任务完成
+        - "soal_repair": 执行失败，进入SOAL修复流程
+        - "reflect_and_retry": 质量不达标但可修复
+        - "terminate": 无法修复，终止任务
+        - "retry_with_delay": 网络问题，延迟后重试
+        """
+        gate_passed = self.completion_gate.check(state, spec)
+
+        if not gate_passed:
+            failed_gates = state.get("failed_gates", [])
+
+            # 执行失败
+            if "execution_success" in failed_gates:
+                return "soal_repair"
+
+            # 质量分数不达标
+            elif any("quality_score" in str(gate) for gate in failed_gates):
+                quality = state.get("quality_score", 0)
+                if quality >= 0.4:
+                    return "reflect_and_retry"
+                else:
+                    return "terminate"
+
+            # HTML快照不存在
+            elif "html_snapshot_exists" in failed_gates:
+                return "retry_with_delay"
+
+            # 其他情况终止
+            else:
+                return "terminate"
+
+        return "complete"
+
+    def get_decision_reason(self, decision: str, state: Dict[str, Any]) -> str:
+        """获取决策原因"""
+        reasons = {
+            "complete": "所有门禁条件满足",
+            "soal_repair": "执行失败，进入SOAL修复流程",
+            "reflect_and_retry": "质量不达标但可修复，反思后重试",
+            "terminate": "无法修复，终止任务",
+            "retry_with_delay": "网络问题，延迟后重试"
         }
+        return reasons.get(decision, "未知决策")
+
+
+class Verifier:
+    """
+    结果验证器 - 独立验证执行结果的正确性
+
+    根据 IMPLEMENTATION.md 第1.3.1节实现
+    """
+
+    def verify_sense(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """验证感知分析"""
+        issues = []
+
+        if not analysis.get('page_type'):
+            issues.append("缺少页面类型")
+
+        if not analysis.get('selectors'):
+            issues.append("缺少选择器")
+
+        return {
+            'valid': len(issues) == 0,
+            'issues': issues,
+            'score': max(0.0, 1.0 - len(issues) * 0.1)
+        }
+
+    def verify_code(self, code: str) -> Dict[str, Any]:
+        """验证生成的代码"""
+        import ast
+
+        try:
+            ast.parse(code)
+            syntax_valid = True
+            issues = []
+        except SyntaxError as e:
+            syntax_valid = False
+            issues = [str(e)]
+
+        return {
+            'valid': syntax_valid,
+            'syntax_valid': syntax_valid,
+            'issues': issues
+        }
+
+    def verify_execution(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """验证执行结果"""
+        data = result.get('data', [])
+
+        return {
+            'valid': len(data) > 0,
+            'has_data': len(data) > 0,
+            'data_count': len(data),
+            'issues': [] if len(data) > 0 else ["没有返回数据"]
+        }
+
+    def verify_quality(self, data: List[Any], expected_fields: List[str]) -> Dict[str, Any]:
+        """验证数据质量"""
+        if not data:
+            return {'valid': False, 'score': 0.0, 'issues': ['无数据']}
+
+        # 检查字段完整性
+        missing_fields = []
+        for item in data[:5]:  # 检查前5个样本
+            for field in expected_fields:
+                if field not in item:
+                    missing_fields.append(field)
+
+        completeness = 1.0 - (len(set(missing_fields)) / max(len(expected_fields), 1))
+
+        # 检查数据一致性
+        consistency = self._check_consistency(data)
+
+        score = (completeness + consistency) / 2
+
+        return {
+            'valid': score >= 0.6,
+            'score': score,
+            'completeness': completeness,
+            'consistency': consistency,
+            'issues': missing_fields if missing_fields else []
+        }
+
+    def _check_consistency(self, data: List[Any]) -> float:
+        """检查数据一致性"""
+        if len(data) < 2:
+            return 1.0
+
+        # 检查字段结构是否一致
+        first_keys = set(data[0].keys())
+        inconsistent_count = 0
+
+        for item in data[1:5]:
+            if set(item.keys()) != first_keys:
+                inconsistent_count += 1
+
+        return 1.0 - (inconsistent_count / min(len(data) - 1, 4))
+
+
+class EvidenceCollector:
+    """
+    证据收集器 - 收集各阶段的结构化证据
+
+    根据 IMPLEMENTATION.md 第1.3.2节实现
+    """
+
+    def __init__(self, output_dir: str):
+        from pathlib import Path
+        import os
+
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.evidence_index = {}
+
+    def collect_sense(self, html: str, analysis: Dict[str, Any]):
+        """收集感知阶段证据"""
+        sense_dir = self.output_dir / 'sense'
+        sense_dir.mkdir(exist_ok=True)
+
+        with open(sense_dir / 'html_snapshot.html', 'w', encoding='utf-8') as f:
+            f.write(html[:100000])
+
+        with open(sense_dir / 'analysis.json', 'w', encoding='utf-8') as f:
+            import json
+            json.dump(analysis, f, ensure_ascii=False, indent=2)
+
+        self.evidence_index['sense'] = str(sense_dir)
+
+    def collect_plan(self, code: str, reasoning: str):
+        """收集规划阶段证据"""
+        plan_dir = self.output_dir / 'plan'
+        plan_dir.mkdir(exist_ok=True)
+
+        with open(plan_dir / 'generated_code.py', 'w', encoding='utf-8') as f:
+            f.write(code)
+
+        with open(plan_dir / 'reasoning.md', 'w', encoding='utf-8') as f:
+            f.write(reasoning)
+
+        self.evidence_index['plan'] = str(plan_dir)
+
+    def collect_act(self, result: Dict[str, Any], logs: List[Any], screenshots: List[str]):
+        """收集执行阶段证据"""
+        act_dir = self.output_dir / 'act'
+        act_dir.mkdir(exist_ok=True)
+
+        with open(act_dir / 'result.json', 'w', encoding='utf-8') as f:
+            import json
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        with open(act_dir / 'execution_log.json', 'w', encoding='utf-8') as f:
+            import json
+            json.dump(logs, f, ensure_ascii=False, indent=2)
+
+        screenshot_dir = act_dir / 'screenshots'
+        screenshot_dir.mkdir(exist_ok=True)
+        for i, screenshot in enumerate(screenshots):
+            import base64
+            img_data = base64.b64decode(screenshot)
+            with open(screenshot_dir / f'screenshot_{i}.png', 'wb') as f:
+                f.write(img_data)
+
+        self.evidence_index['act'] = str(act_dir)
+
+    def collect_verify(self, sample_data: List[Any], quality_report: Dict[str, Any], issues: List[str]):
+        """收集验证阶段证据"""
+        verify_dir = self.output_dir / 'verify'
+        verify_dir.mkdir(exist_ok=True)
+
+        with open(verify_dir / 'sample_data.json', 'w', encoding='utf-8') as f:
+            import json
+            json.dump(sample_data, f, ensure_ascii=False, indent=2)
+
+        with open(verify_dir / 'quality_report.json', 'w', encoding='utf-8') as f:
+            import json
+            json.dump(quality_report, f, ensure_ascii=False, indent=2)
+
+        with open(verify_dir / 'issues.txt', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(issues))
+
+        self.evidence_index['verify'] = str(verify_dir)
+
+    def save_index(self):
+        """保存证据索引"""
+        with open(self.output_dir / 'evidence_index.json', 'w', encoding='utf-8') as f:
+            import json
+            json.dump(self.evidence_index, f, ensure_ascii=False, indent=2)
+
+    def get_evidence_path(self) -> str:
+        """获取证据包路径"""
+        return str(self.output_dir)

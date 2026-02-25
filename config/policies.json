@@ -1,172 +1,37 @@
 {
-  "policies": {
-    "code_security": [
-      {
-        "name": "no_os_system",
-        "level": "critical",
-        "condition": "code contains \"os.system\"",
-        "action": "reject",
-        "description": "禁止使用 os.system 执行系统命令"
-      },
-      {
-        "name": "no_eval",
-        "level": "critical",
-        "condition": "code contains \"eval(\"",
-        "action": "reject",
-        "description": "禁止使用 eval 执行动态代码"
-      },
-      {
-        "name": "no_exec",
-        "level": "critical",
-        "condition": "code contains \"exec(\"",
-        "action": "reject",
-        "description": "禁止使用 exec 执行动态代码"
-      },
-      {
-        "name": "no_import_os",
-        "level": "warning",
-        "condition": "code contains \"import os\"",
-        "action": "warn",
-        "description": "谨慎使用 os 模块"
-      },
-      {
-        "name": "no_subprocess",
-        "level": "critical",
-        "condition": "code contains \"subprocess\"",
-        "action": "reject",
-        "description": "禁止使用 subprocess 模块"
-      }
-    ],
-
-    "resource_limits": [
-      {
-        "name": "max_memory",
-        "level": "critical",
-        "condition": "memory > 512MB",
-        "action": "terminate",
-        "description": "内存使用不得超过 512MB"
-      },
-      {
-        "name": "max_cpu",
-        "level": "warning",
-        "condition": "cpu > 80%",
-        "action": "warn",
-        "description": "CPU 使用率超过 80%"
-      },
-      {
-        "name": "max_execution_time",
-        "level": "critical",
-        "condition": "execution_time > 300s",
-        "action": "terminate",
-        "description": "单次执行时间不得超过 300 秒"
-      }
-    ],
-
-    "recursion_limits": [
-      {
-        "name": "max_depth",
-        "level": "critical",
-        "condition": "depth > 5",
-        "action": "reject",
-        "description": "递归深度不得超过 5 层"
-      },
-      {
-        "name": "max_iterations",
-        "level": "critical",
-        "condition": "iterations > 100",
-        "action": "terminate",
-        "description": "循环次数不得超过 100 次"
-      }
-    ],
-
-    "network_limits": [
-      {
-        "name": "allowed_domains",
-        "level": "critical",
-        "condition": "url not in allowed_domains",
-        "action": "reject",
-        "description": "只能访问允许的域名"
-      },
-      {
-        "name": "max_requests",
-        "level": "warning",
-        "condition": "requests > 1000",
-        "action": "warn",
-        "description": "请求次数超过 1000 次"
-      },
-      {
-        "name": "max_concurrent_requests",
-        "level": "warning",
-        "condition": "concurrent_requests > 10",
-        "action": "warn",
-        "description": "并发请求数超过 10 个"
-      },
-      {
-        "name": "request_rate_limit",
-        "level": "warning",
-        "condition": "request_rate > 10/s",
-        "action": "throttle",
-        "description": "请求速率限制为 10 次/秒"
-      }
-    ],
-
-    "data_validation": [
-      {
-        "name": "min_quality_score",
-        "level": "warning",
-        "condition": "quality_score < 0.8",
-        "action": "warn",
-        "description": "数据质量分数低于 0.8"
-      },
-      {
-        "name": "max_error_rate",
-        "level": "critical",
-        "condition": "error_rate > 0.3",
-        "action": "reject",
-        "description": "错误率超过 30%"
-      },
-      {
-        "name": "min_data_count",
-        "level": "warning",
-        "condition": "data_count < 10",
-        "action": "warn",
-        "description": "提取数据不足 10 条"
-      }
-    ],
-
-    "anti_bot": [
-      {
-        "name": "random_delay",
-        "level": "info",
-        "condition": "always",
-        "action": "apply",
-        "description": "随机延迟 1-3 秒",
-        "config": {
-          "min": 1,
-          "max": 3
-        }
-      },
-      {
-        "name": "user_agent_rotation",
-        "level": "info",
-        "condition": "always",
-        "action": "apply",
-        "description": "轮换用户代理",
-        "config": {
-          "enabled": true
-        }
-      },
-      {
-        "name": "request_interval",
-        "level": "info",
-        "condition": "always",
-        "action": "apply",
-        "description": "请求间隔",
-        "config": {
-          "min": 1,
-          "max": 2
-        }
-      }
-    ]
-  }
+    "llm_settings": {
+        "max_tokens": 1024,
+        "temperature": 0.7,
+        "top_p": 0.7,
+        "model": "glm-4"
+    },
+    "execution_settings": {
+        "max_retries": 3,
+        "max_iterations": 10,
+        "timeout_seconds": 30,
+        "browser_timeout_seconds": 30
+    },
+    "quality_thresholds": {
+        "min_quality_score": 0.6,
+        "min_sample_count": 5
+    },
+    "risk_thresholds": {
+        "max_memory_mb": 512,
+        "max_cpu_percent": 80,
+        "max_error_rate": 0.3,
+        "max_consecutive_errors": 5
+    },
+    "browser_settings": {
+        "headless": true,
+        "viewport": {
+            "width": 1920,
+            "height": 1080
+        },
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "storage_settings": {
+        "evidence_dir": "./evidence",
+        "state_dir": "./states",
+        "config_dir": "./config"
+    }
 }

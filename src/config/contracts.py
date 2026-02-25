@@ -1,294 +1,341 @@
 """
 契约定义系统 - 战略层契约规范
 定义所有行为必须遵守的契约规范
+
+根据 IMPLEMENTATION.md 的完整设计，包含：
+- SpecContract (Spec契约)
+- StateContract (状态契约)
+- RoutingDecision (路由决策契约)
+- EvidenceContract (证据契约)
 """
 
-from typing import Dict, List, Optional, Any, Set, Literal
-from enum import Enum
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, TypedDict, Literal
 from datetime import datetime
 import json
 
 
-# ==================== 任务目标契约 ====================
+# ==================== Spec 契约 (IMPLEMENTATION.md 第1.1节) ====================
 
-class ExtractionType(str, Enum):
-    """数据提取类型"""
-    SINGLE_PAGE = "single_page"  # 单页提取
-    MULTI_PAGE = "multi_page"  # 多页提取
-    PAGINATION = "pagination"  # 分页提取
-    INFINITE_SCROLL = "infinite_scroll"  # 无限滚动
-    FORM_SUBMISSION = "form_submission"  # 表单提交
+class SpecContract(TypedDict, total=False):
+    """Spec契约结构定义 - 所有任务的完整规范"""
 
+    # ===== 基本信息 =====
+    version: str  # 版本号，如 "v1"
+    freeze: bool  # 是否冻结，冻结后不可修改
+    created_at: str  # 创建时间 ISO 8601格式
+    updated_at: str  # 更新时间 ISO 8601格式
 
-class FieldType(str, Enum):
-    """字段类型定义"""
-    TEXT = "text"
-    NUMBER = "number"
-    DATE = "date"
-    URL = "url"
-    IMAGE = "image"
-    HTML = "html"
-    RAW = "raw"
+    # ===== 任务目标 =====
+    goal: str  # 用户目标描述
+    target_url: str  # 目标URL
 
+    # ===== 约束条件 =====
+    constraints: List[str]  # 约束列表
+    max_execution_time: int  # 最大执行时间（秒）
+    max_retries: int  # 最大重试次数
+    max_iterations: int  # 最大迭代次数
 
-@dataclass
-class FieldSpec:
-    """字段规范"""
-    name: str  # 字段名
-    type: FieldType  # 字段类型
-    selector: str  # CSS/XPath 选择器
-    required: bool = False  # 是否必填
-    multiple: bool = False  # 是否多值
-    description: Optional[str] = None  # 字段描述
-    validation_rules: Optional[List[str]] = None  # 验证规则
+    # ===== 完成门禁条件 =====
+    completion_gate: List[str]
+    # 支持的门禁条件：
+    # - "html_snapshot_exists" - HTML快照存在
+    # - "sense_analysis_valid" - 感知分析有效
+    # - "code_syntax_valid" - 代码语法正确
+    # - "execution_success" - 执行成功
+    # - "quality_score >= 0.6" - 质量分数 >= 阈值
+    # - "sample_count >= 5" - 样本数 >= 阈值
 
+    # ===== 证据要求 =====
+    evidence: Dict[str, List[str]]
+    # {
+    #     "required": ["spec.yaml", "sense_report.json", "generated_code.py", ...],
+    #     "optional": ["screenshots/", "reflection_memory.json"]
+    # }
 
-@dataclass
-class ExtractionTarget:
-    """提取目标"""
-    name: str  # 目标名称
-    fields: List[FieldSpec]  # 字段列表
-    url_pattern: Optional[str] = None  # URL 模式（用于多页）
-    pagination: Optional[Dict[str, Any]] = None  # 分页配置
-
-
-@dataclass
-class SpecContract:
-    """
-    Spec 契约 - 定义任务的完整规范
-
-    契约一旦加载即冻结，不可修改
-    所有行为必须严格遵守契约定义
-    """
-    # 基本信息
-    task_id: str  # 任务ID
-    task_name: str  # 任务名称
-    created_at: datetime  # 创建时间
-    version: str = "1.0"  # 契约版本
-
-    # 提取目标
-    extraction_type: ExtractionType = ExtractionType.SINGLE_PAGE
-    targets: List[ExtractionTarget] = field(default_factory=list)
-
-    # 数据源
-    start_url: str = ""  # 起始URL
-    max_pages: int = 100  # 最大页数
-    depth_limit: int = 3  # 爬取深度限制
-
-    # 验证规则
-    validation_rules: Dict[str, Any] = field(default_factory=dict)
-
-    # 反爬策略
-    anti_bot: Dict[str, Any] = field(default_factory=dict)
-
-    # 完成标准
-    completion_criteria: Dict[str, Any] = field(default_factory=dict)
-
-    # 元数据
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    # 冻结状态
-    _frozen: bool = False
-
-    def __post_init__(self):
-        """初始化后冻结契约"""
-        self._frozen = True
-
-    def __setattr__(self, key, value):
-        """防止修改已冻结的契约"""
-        if getattr(self, '_frozen', False) and key != '_frozen':
-            raise PermissionError(f"SpecContract is frozen and cannot be modified")
-        super().__setattr__(key, value)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'SpecContract':
-        """从字典加载契约"""
-        # 解析提取类型
-        extraction_type = ExtractionType(data.get('extraction_type', 'single_page'))
-
-        # 解析字段规范
-        targets = []
-        for target_data in data.get('targets', []):
-            fields = []
-            for field_data in target_data.get('fields', []):
-                field = FieldSpec(
-                    name=field_data['name'],
-                    type=FieldType(field_data.get('type', 'text')),
-                    selector=field_data['selector'],
-                    required=field_data.get('required', False),
-                    multiple=field_data.get('multiple', False),
-                    description=field_data.get('description'),
-                    validation_rules=field_data.get('validation_rules')
-                )
-                fields.append(field)
-
-            target = ExtractionTarget(
-                name=target_data['name'],
-                fields=fields,
-                url_pattern=target_data.get('url_pattern'),
-                pagination=target_data.get('pagination')
-            )
-            targets.append(target)
-
-        # 创建契约
-        contract = cls(
-            task_id=data['task_id'],
-            task_name=data['task_name'],
-            created_at=datetime.fromisoformat(data.get('created_at', datetime.now().isoformat())),
-            version=data.get('version', '1.0'),
-            extraction_type=extraction_type,
-            targets=targets,
-            start_url=data.get('start_url', ''),
-            max_pages=data.get('max_pages', 100),
-            depth_limit=data.get('depth_limit', 3),
-            validation_rules=data.get('validation_rules', {}),
-            anti_bot=data.get('anti_bot', {}),
-            completion_criteria=data.get('completion_criteria', {}),
-            metadata=data.get('metadata', {})
-        )
-
-        return contract
-
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            'task_id': self.task_id,
-            'task_name': self.task_name,
-            'created_at': self.created_at.isoformat(),
-            'version': self.version,
-            'extraction_type': self.extraction_type.value,
-            'targets': [
-                {
-                    'name': target.name,
-                    'fields': [
-                        {
-                            'name': field.name,
-                            'type': field.type.value,
-                            'selector': field.selector,
-                            'required': field.required,
-                            'multiple': field.multiple,
-                            'description': field.description,
-                            'validation_rules': field.validation_rules
-                        }
-                        for field in target.fields
-                    ],
-                    'url_pattern': target.url_pattern,
-                    'pagination': target.pagination
-                }
-                for target in self.targets
-            ],
-            'start_url': self.start_url,
-            'max_pages': self.max_pages,
-            'depth_limit': self.depth_limit,
-            'validation_rules': self.validation_rules,
-            'anti_bot': self.anti_bot,
-            'completion_criteria': self.completion_criteria,
-            'metadata': self.metadata
-        }
+    # ===== 能力需求 =====
+    capabilities: List[str]
+    # ["sense", "plan", "act", "verify", "judge", "explore", "reflect"]
 
 
-# ==================== 状态契约 ====================
+# ==================== State 契约 (IMPLEMENTATION.md 第1.2节) ====================
 
-class TaskStatus(str, Enum):
-    """任务状态"""
-    PENDING = "pending"  # 待处理
-    RUNNING = "running"  # 运行中
-    COMPLETED = "completed"  # 已完成
-    FAILED = "failed"  # 失败
-    PAUSED = "paused"  # 已暂停
-    CANCELLED = "cancelled"  # 已取消
+class StateContract(TypedDict, total=False):
+    """状态契约 - 定义任务的运行时状态"""
 
-
-@dataclass
-class ExtractionProgress:
-    """提取进度"""
-    total_items: int = 0  # 总条目数
-    successful_items: int = 0  # 成功条目数
-    failed_items: int = 0  # 失败条目数
-    current_page: int = 0  # 当前页码
-    current_url: Optional[str] = None  # 当前URL
-
-
-@dataclass
-class ResourceUsage:
-    """资源使用情况"""
-    cpu_percent: float = 0.0
-    memory_mb: float = 0.0
-    network_bytes: int = 0
-    execution_time_seconds: float = 0.0
-
-
-@dataclass
-class StateContract:
-    """
-    State 契约 - 定义任务的运行时状态
-
-    状态由系统管理，代理可以读取但不能直接修改
-    状态变更必须通过规范的机制
-    """
-    # 基本信息
+    # ===== 任务信息 =====
     task_id: str
-    timestamp: datetime
+    url: str
+    goal: str
 
-    # 任务状态
-    status: TaskStatus
-    progress: ExtractionProgress = field(default_factory=ExtractionProgress)
+    # ===== Spec契约 =====
+    spec: SpecContract
 
-    # 已提取数据
-    extracted_data: List[Dict[str, Any]] = field(default_factory=list)
+    # ===== 执行状态 =====
+    stage: str  # 'initialized', 'sensing', 'planning', 'acting', 'verifying', 'judging'
+    iteration: int
+    routing_decision: Optional[Dict[str, Any]]
 
-    # 错误和警告
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    # ===== 时间戳 =====
+    created_at: str
+    updated_at: str
+    started_at: Optional[str]
+    completed_at: Optional[str]
 
-    # 资源使用
-    resource_usage: ResourceUsage = field(default_factory=ResourceUsage)
+    # ===== 数据 =====
+    html_snapshot: Optional[str]
+    sense_analysis: Optional[Dict[str, Any]]
+    generated_code: Optional[str]
+    execution_result: Optional[Dict[str, Any]]
+    sample_data: Optional[List[Any]]
+    quality_score: Optional[float]
 
-    # 证据引用
-    evidence_refs: List[str] = field(default_factory=list)
+    # ===== 验证 =====
+    syntax_valid: Optional[bool]
+    gate_passed: Optional[bool]
+    passed_gates: Optional[List[str]]
+    failed_gates: Optional[List[str]]
 
-    # 元数据
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    # ===== 性能 =====
+    performance_data: Dict[str, Any]
+    # {
+    #     "sense_duration": float,
+    #     "plan_duration": float,
+    #     "act_duration": float,
+    #     "total_duration": float,
+    #     "llm_calls": int
+    # }
 
-    @classmethod
-    def create_initial(cls, task_id: str, spec: SpecContract) -> 'StateContract':
-        """创建初始状态"""
-        return cls(
-            task_id=task_id,
-            timestamp=datetime.now(),
-            status=TaskStatus.PENDING,
-            progress=ExtractionProgress(),
-            extracted_data=[],
-            errors=[],
-            warnings=[],
-            resource_usage=ResourceUsage(),
-            evidence_refs=[],
-            metadata={'spec_version': spec.version}
-        )
+    # ===== 历史 =====
+    failure_history: List[Dict[str, Any]]
+    evidence_collected: Dict[str, Any]
 
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            'task_id': self.task_id,
-            'timestamp': self.timestamp.isoformat(),
-            'status': self.status.value,
-            'progress': {
-                'total_items': self.progress.total_items,
-                'successful_items': self.progress.successful_items,
-                'failed_items': self.progress.failed_items,
-                'current_page': self.progress.current_page,
-                'current_url': self.progress.current_url
+
+# ==================== RoutingDecision 契约 (IMPLEMENTATION.md 第1.3节) ====================
+
+class RoutingDecision(TypedDict, total=False):
+    """路由决策契约 - SmartRouter 的决策结果"""
+
+    # ===== 策略信息 =====
+    strategy: str  # 策略名称
+    capabilities: List[str]  # 需要的能力列表
+    expected_success_rate: float  # 预期成功率 0.0-1.0
+
+    # ===== 分析信息 =====
+    complexity: Literal['simple', 'medium', 'complex', 'extremely_complex']
+    page_type: Literal['static', 'dynamic', 'spa', 'interactive', 'unknown']
+    special_requirements: List[str]  # ['login', 'javascript', 'pagination', 'anti-bot']
+
+    # ===== 执行参数 =====
+    execution_params: Dict[str, Any]
+
+    # ===== 备选方案 =====
+    fallback_strategies: List[str]
+
+    # ===== 元数据 =====
+    decided_at: str  # ISO 8601格式
+    decision_duration: float  # 秒
+
+
+# ==================== Evidence 契约 (IMPLEMENTATION.md 第1.4节) ====================
+
+class EvidenceContract(TypedDict, total=False):
+    """证据契约 - 各阶段的结构化证据"""
+
+    # ===== 感知证据 =====
+    html_snapshot: str
+    sense_analysis: Dict[str, Any]
+
+    # ===== 规划证据 =====
+    generated_code: str
+    reasoning: str
+
+    # ===== 执行证据 =====
+    execution_log: Dict[str, Any]
+    screenshots: List[str]  # base64编码
+    result: Dict[str, Any]
+
+    # ===== 验证证据 =====
+    sample_data: List[Any]
+    quality_report: Dict[str, Any]
+    issues: List[str]
+
+    # ===== 评判证据 =====
+    judge_decision: Dict[str, Any]
+
+    # ===== 元数据 =====
+    collected_at: str  # ISO 8601格式
+    evidence_size: int  # 字节数
+
+
+# ==================== 契约验证工具 ====================
+
+class ContractValidator:
+    """契约验证器"""
+
+    @staticmethod
+    def validate_spec(spec: Dict[str, Any]) -> bool:
+        """验证Spec契约合法性"""
+        required_fields = ['version', 'freeze', 'goal', 'completion_gate']
+
+        for field in required_fields:
+            if field not in spec:
+                raise ValueError(f"Spec missing required field: {field}")
+
+        if spec.get('freeze') is not True:
+            raise ValueError("Spec must be frozen (freeze=true)")
+
+        if not isinstance(spec['completion_gate'], list):
+            raise ValueError("completion_gate must be a list")
+
+        return True
+
+    @staticmethod
+    def validate_state(state: Dict[str, Any]) -> bool:
+        """验证State契约合法性"""
+        required_fields = ['task_id', 'url', 'stage', 'iteration']
+
+        for field in required_fields:
+            if field not in state:
+                raise ValueError(f"State missing required field: {field}")
+
+        if not isinstance(state['iteration'], int):
+            raise ValueError("iteration must be an integer")
+
+        return True
+
+    @staticmethod
+    def validate_routing_decision(decision: Dict[str, Any]) -> bool:
+        """验证RoutingDecision契约合法性"""
+        required_fields = ['strategy', 'capabilities', 'expected_success_rate']
+
+        for field in required_fields:
+            if field not in decision:
+                raise ValueError(f"RoutingDecision missing required field: {field}")
+
+        if not (0 <= decision['expected_success_rate'] <= 1):
+            raise ValueError("expected_success_rate must be between 0 and 1")
+
+        valid_capabilities = {'sense', 'plan', 'act', 'verify', 'judge', 'explore', 'reflect'}
+        if not all(cap in valid_capabilities for cap in decision['capabilities']):
+            raise ValueError(f"Invalid capabilities in {decision['capabilities']}")
+
+        return True
+
+
+# ==================== 契约工厂 ====================
+
+class ContractFactory:
+    """契约工厂 - 创建标准化契约对象"""
+
+    @staticmethod
+    def create_spec(
+        goal: str,
+        target_url: str,
+        completion_gate: Optional[List[str]] = None,
+        max_execution_time: int = 300,
+        max_retries: int = 3,
+        max_iterations: int = 10
+    ) -> SpecContract:
+        """创建Spec契约"""
+        if completion_gate is None:
+            completion_gate = [
+                'html_snapshot_exists',
+                'sense_analysis_valid',
+                'execution_success',
+                'quality_score >= 0.6'
+            ]
+
+        spec: SpecContract = {
+            'version': 'v1',
+            'freeze': True,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            'goal': goal,
+            'target_url': target_url,
+            'constraints': [],
+            'max_execution_time': max_execution_time,
+            'max_retries': max_retries,
+            'max_iterations': max_iterations,
+            'completion_gate': completion_gate,
+            'evidence': {
+                'required': ['spec.yaml', 'sense_report.json', 'generated_code.py'],
+                'optional': []
             },
-            'extracted_data_count': len(self.extracted_data),
-            'errors_count': len(self.errors),
-            'warnings_count': len(self.warnings),
-            'resource_usage': {
-                'cpu_percent': self.resource_usage.cpu_percent,
-                'memory_mb': self.resource_usage.memory_mb,
-                'network_bytes': self.resource_usage.network_bytes,
-                'execution_time_seconds': self.resource_usage.execution_time_seconds
-            },
-            'evidence_refs_count': len(self.evidence_refs),
-            'metadata': self.metadata
+            'capabilities': ['sense', 'plan', 'act', 'verify']
         }
+
+        return spec
+
+    @staticmethod
+    def create_initial_state(
+        task_id: str,
+        url: str,
+        goal: str,
+        spec: SpecContract
+    ) -> StateContract:
+        """创建初始状态"""
+        state: StateContract = {
+            'task_id': task_id,
+            'url': url,
+            'goal': goal,
+            'spec': spec,
+            'stage': 'initialized',
+            'iteration': 0,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            'performance_data': {},
+            'failure_history': [],
+            'evidence_collected': {}
+        }
+
+        return state
+
+    @staticmethod
+    def create_routing_decision(
+        strategy: str,
+        capabilities: List[str],
+        expected_success_rate: float,
+        complexity: str = 'simple',
+        page_type: str = 'unknown'
+    ) -> RoutingDecision:
+        """创建路由决策"""
+        decision: RoutingDecision = {
+            'strategy': strategy,
+            'capabilities': capabilities,
+            'expected_success_rate': expected_success_rate,
+            'complexity': complexity,
+            'page_type': page_type,
+            'special_requirements': [],
+            'execution_params': {},
+            'fallback_strategies': [],
+            'decided_at': datetime.now().isoformat(),
+            'decision_duration': 0.0
+        }
+
+        return decision
+
+
+# ==================== 辅助函数 ====================
+
+def spec_to_json(spec: SpecContract) -> str:
+    """将Spec契约转换为JSON字符串"""
+    return json.dumps(spec, ensure_ascii=False, indent=2)
+
+
+def json_to_spec(json_str: str) -> SpecContract:
+    """将JSON字符串转换为Spec契约"""
+    spec = json.loads(json_str)
+    ContractValidator.validate_spec(spec)
+    return spec
+
+
+def state_to_json(state: StateContract) -> str:
+    """将State契约转换为JSON字符串"""
+    return json.dumps(state, ensure_ascii=False, indent=2)
+
+
+def json_to_state(json_str: str) -> StateContract:
+    """将JSON字符串转换为State契约"""
+    state = json.loads(json_str)
+    ContractValidator.validate_state(state)
+    return state
