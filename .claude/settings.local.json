@@ -5,7 +5,12 @@
       "Bash(cmd:*)",
       "Bash(powershell Get-ChildItem -Recurse | Select-Object FullName:*)",
       "Bash(powershell:*)",
-      "Bash(cd D:\\\\full-self-crawl-agent:*)"
+      "Bash(cd D:\\\\full-self-crawl-agent:*)",
+      "Bash(cd:*)",
+      "Bash(cd /d/full-self-crawl-agent && python -m playwright install chromium 2>&1)",
+      "Bash(head:*)",
+      "Bash(cd /d/full-self-crawl-agent && python -c \"from playwright.sync_api import sync_playwright; import sys; p = sync_playwright\\(\\).start\\(\\); browser = p.chromium.launch\\(headless=True\\); print\\('Chromium OK'\\); browser.close\\(\\); p.stop\\(\\)\" 2>&1)",
+      "Bash(cd /d/full-self-crawl-agent && python -c \"import httpx; import os; from dotenv import load_dotenv; load_dotenv\\(\\); key = os.getenv\\('ZHIPU_API_KEY'\\); print\\('Testing GLM API...'\\); res = httpx.post\\('https://open.bigmodel.cn/api/paas/v4/chat/completions', headers={'Authorization': f'Bearer {key}'}, json={'model': 'glm-4.7', 'messages': [{'role': 'user', 'content': '你好'}]}\\); print\\('Status:', res.status_code\\); print\\('Response:', res.text[:200]\\)\" 2>&1)"
     ]
   }
 }

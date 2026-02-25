@@ -1,10 +1,29 @@
 """
-LLM 客户端 - 智谱 GLM API
+LLM 客户端 - 支持智谱 GLM 和阿里云百炼
+
+用法示例：
+
+# 阿里云百炼
+llm = LLMClient(api_key='sk-xxx', model='qwen-max', provider='alibaba')
+# 或自动检测
+llm = LLMClient(api_key='sk-xxx', model='qwen-max')
+
+# 智谱 GLM
+llm = LLMClient(api_key='xxx', model='glm-4', provider='zhipu')
+
+# 自定义 API 地址
+llm = LLMClient(
+    api_key='sk-xxx',
+    model='qwen-max',
+    api_base='https://dashscope.aliyuncs.com/compatible-mode/v1',
+    provider='alibaba'
+)
 """
 
 from typing import Dict, Any, List, Optional
 import httpx
 import json
+import os
 from datetime import datetime
 
 
@@ -12,20 +31,36 @@ class LLMClient:
     """
     LLM 客户端
 
-    支持智谱 GLM 系列模型
-    包括：
-    - GLM-4
-    - GLM-4-Air
-    - GLM-4-Flash
+    支持：
+    - 智谱 GLM 系列模型 (glm-4 / glm-4-air / glm-4-flash)
+    - 阿里云百炼通义千问模型 (qwen-max / qwen-plus / qwen-turbo)
+    - OpenAI 兼容 API
     """
 
-    def __init__(self, api_key: str, model: str = 'glm-4'):
+    def __init__(self, api_key: str, model: str = 'glm-4',
+                 api_base: Optional[str] = None):
+        """
+        初始化 LLM 客户端
+
+        Args:
+            api_key: API 密钥
+            model: 模型名称
+            api_base: API 基础地址（可选，默认智谱官方端点）
+        """
         self.api_key = api_key
         self.model = model
-        self.api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+        self.api_url = self._get_api_url(api_base)
         self.client = httpx.AsyncClient(timeout=60.0)
         self.call_count = 0
         self.total_tokens = 0
+
+    def _get_api_url(self, api_base: Optional[str]) -> str:
+        """获取 API 地址"""
+        if api_base:
+            return api_base.rstrip('/') + '/chat/completions'
+
+        # 默认智谱 API
+        return 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
                       max_tokens: int = 1024, temperature: float = 0.7,
@@ -83,9 +118,17 @@ class LLMClient:
                        top_p: float) -> Optional[Dict[str, Any]]:
         """调用 API"""
         headers = {
-            'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
+
+        # 根据提供商设置认证头
+        if self.provider == 'zhipu':
+            headers['Authorization'] = f'Bearer {self.api_key}'
+        elif self.provider == 'alibaba':
+            headers['Authorization'] = f'Bearer {self.api_key}'
+            headers['X-DashScope-Async'] = 'enable'
+        else:
+            headers['Authorization'] = f'Bearer {self.api_key}'
 
         data = {
             'model': self.model,
@@ -106,6 +149,8 @@ class LLMClient:
                 return response.json()
             else:
                 print(f'API Error: {response.status_code} - {response.text}')
+                print(f'Provider: {self.provider}, Model: {self.model}')
+                print(f'URL: {self.api_url}')
                 return None
 
         except Exception as e:
@@ -121,7 +166,8 @@ class LLMClient:
         return {
             'call_count': self.call_count,
             'total_tokens': self.total_tokens,
-            'model': self.model
+            'model': self.model,
+            'api_url': self.api_url
         }
 
     async def __aenter__(self):
@@ -184,8 +230,9 @@ class CachedLLMClient(LLMClient):
     带缓存的 LLM 客户端
     """
 
-    def __init__(self, api_key: str, model: str = 'glm-4'):
-        super().__init__(api_key, model)
+    def __init__(self, api_key: str, model: str = 'glm-4',
+                 api_base: Optional[str] = None):
+        super().__init__(api_key, model, api_base)
         self.cache = LLMCache()
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,

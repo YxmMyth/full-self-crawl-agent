@@ -11,6 +11,11 @@ from typing import Optional, Dict, Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+from dotenv import load_dotenv
+
+load_dotenv()  # 加载 .env 文件
+
+
 class SelfCrawlingAgent:
     """
     Full Self-Crawling Agent 主类
@@ -66,7 +71,14 @@ class SelfCrawlingAgent:
 
         # 工具层
         self.browser = BrowserTool(headless=True)
-        self.llm_client = CachedLLMClient(api_key, model='glm-4') if api_key else None
+        # 从环境变量读取配置
+        llm_api_base = os.getenv('LLM_API_BASE')
+
+        self.llm_client = CachedLLMClient(
+            api_key=api_key,
+            model=os.getenv('LLM_MODEL', 'glm-4'),
+            api_base=llm_api_base
+        ) if api_key else None
 
         # 存储
         self.evidence_storage = EvidenceStorage()
@@ -103,6 +115,9 @@ class SelfCrawlingAgent:
         self.evidence_storage.create_task_dir(self.task_id)
 
         print(f"✓ 已初始化任务: {self.spec.task_name} ({self.task_id})")
+        if self.llm_client:
+            stats = self.llm_client.get_stats()
+            print(f"✓ LLM 客户端: {stats['provider']} - {stats['model']}")
 
     async def run(self) -> Dict[str, Any]:
         """
@@ -237,14 +252,25 @@ def main():
     )
     parser.add_argument('spec_file', help='Spec 契约文件路径')
     parser.add_argument('--api-key', help='智谱 API Key')
+    parser.add_argument('--model', help='模型名称（默认: glm-coding-plan）')
+    parser.add_argument('--api-base', help='自定义 API 端点')
     parser.add_argument('--headless', action='store_true', default=True,
                         help='无头模式（默认）')
     parser.add_argument('--debug', action='store_true', help='调试模式')
 
     args = parser.parse_args()
 
+    # 从环境变量或参数读取配置
+    api_key = args.api_key or os.getenv('ZHIPU_API_KEY')
+    model = args.model or os.getenv('LLM_MODEL', 'glm-coding-plan')
+    api_base = args.api_base or os.getenv('LLM_API_BASE')
+
+    if not api_key:
+        print("⚠ 未提供 API Key，将使用降级模式运行")
+        print("  如需使用 AI 功能，设置 ZHIPU_API_KEY 环境变量")
+
     # 运行
-    agent = SelfCrawlingAgent(args.spec_file, args.api_key)
+    agent = SelfCrawlingAgent(args.spec_file, api_key)
 
     try:
         result = asyncio.run(agent.run())
