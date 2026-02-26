@@ -37,6 +37,23 @@ class StateManager:
         self.history: List[StateSnapshot] = []
         self.max_history: int = 100  # 最大历史记录数
 
+    def create_initial_state(self, task_id: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """创建初始状态"""
+        initial_state = {
+            'task_id': task_id,
+            'spec': spec,
+            'stage': 'initialized',
+            'iteration': 0,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            'performance_data': {},
+            'failure_history': [],
+            'evidence_collected': {}
+        }
+
+        self.current_state = initial_state
+        return initial_state
+
     def update_state(self, updates: Dict[str, Any], reason: str = "") -> None:
         """
         更新状态

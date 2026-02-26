@@ -101,7 +101,7 @@ class SelfCrawlingAgent:
 
         # 初始化完成门禁
         from src.core.completion_gate import CompletionGate
-        self.completion_gate = CompletionGate(self.spec)
+        self.completion_gate = CompletionGate()
 
         # 初始化验证器
         from src.core.verifier import Verifier
@@ -114,7 +114,7 @@ class SelfCrawlingAgent:
         # 创建证据目录
         self.evidence_storage.create_task_dir(self.task_id)
 
-        print(f"✓ 已初始化任务: {self.spec['task_name']} ({self.task_id})")
+        print(f"OK 已初始化任务: {self.spec['task_name']} ({self.task_id})")
         if self.llm_client:
             stats = self.llm_client.get_stats()
             print(f"✓ LLM 客户端: {stats['provider']} - {stats['model']}")
@@ -180,9 +180,9 @@ class SelfCrawlingAgent:
 
             # 门禁检查
             print("→ 门禁检查...")
-            gate_decision = self.completion_gate.check_completion(
-                self.state_manager.get_state(),
-                {'extracted_data': extracted_data}
+            gate_decision = self.completion_gate.check(
+                self.state_manager.get_state(),  # state
+                self.spec  # spec
             )
 
             # 保存证据和数据

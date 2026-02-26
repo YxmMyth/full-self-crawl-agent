@@ -29,7 +29,8 @@
       "Bash(cd \"D:\\\\full-self-crawl-agent\" && python -m pytest tests/test_contracts_simple.py tests/test_tools.py -v 2>&1)",
       "Bash(cd \"D:\\\\full-self-crawl-agent\" && python -m pytest tests/test_integration.py -v 2>&1)",
       "Bash(cd \"D:\\\\full-self-crawl-agent\" && python tests/test_integration.py 2>&1)",
-      "Bash(cd \"D:\\\\full-self-crawl-agent\" && python -m pytest tests/test_contracts_simple.py tests/test_tools.py -v --tb=short 2>&1)"
+      "Bash(cd \"D:\\\\full-self-crawl-agent\" && python -m pytest tests/test_contracts_simple.py tests/test_tools.py -v --tb=short 2>&1)",
+      "Bash(python:*)"
     ]
   }
 }
