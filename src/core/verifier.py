@@ -338,39 +338,71 @@ class Verifier:
         issues = []
         valid = True
 
-        # 检查必填字段
-        for target in self.spec.targets:
-            for field in target.fields:
-                if field.required:
-                    if field.name not in item or not item[field.name]:
+        # 检查必填字段 (支持字典格式的 spec)
+        targets = self._get_targets()
+        for target in targets:
+            for field in target.get('fields', []):
+                if field.get('required', False):
+                    field_name = field.get('name')
+                    if field_name not in item or not item[field_name]:
                         issues.append({
                             'level': 'error',
                             'type': 'missing_required_field',
-                            'message': f'缺少必填字段: {field.name}',
-                            'field': field.name
+                            'message': f'缺少必填字段: {field_name}',
+                            'field': field_name
                         })
                         valid = False
 
                     # 检查格式
-                    elif field.type:
-                        format_valid = self._validate_format(
-                            item[field.name],
-                            field.type.value,
-                            field.validation_rules
-                        )
+                    elif field.get('type'):
+                        field_type = field.get('type')
+                        if isinstance(field_type, str):
+                            format_valid = self._validate_format(
+                                item[field_name],
+                                field_type,
+                                field.get('validation_rules', [])
+                            )
+                        else:
+                            format_valid = True  # type 不是字符串时跳过
                         if not format_valid:
                             issues.append({
                                 'level': 'warning',
                                 'type': 'invalid_format',
-                                'message': f'字段格式不正确: {field.name}',
-                                'field': field.name,
-                                'expected_type': field.type.value
+                                'message': f'字段格式不正确: {field_name}',
+                                'field': field_name,
+                                'expected_type': field_type
                             })
 
         return {
             'valid': valid,
             'issues': issues
         }
+
+    def _get_targets(self) -> List[Dict]:
+        """获取目标列表（兼容字典和对象格式）"""
+        if isinstance(self.spec, dict):
+            return self.spec.get('targets', [])
+        elif hasattr(self.spec, 'targets'):
+            targets = self.spec.targets
+            # 如果是对象列表，转换为字典
+            if targets and hasattr(targets[0], 'fields'):
+                return [
+                    {
+                        'name': t.name if hasattr(t, 'name') else '',
+                        'fields': [
+                            {
+                                'name': f.name if hasattr(f, 'name') else f.get('name'),
+                                'type': f.type if hasattr(f, 'type') else f.get('type'),
+                                'required': f.required if hasattr(f, 'required') else f.get('required', False),
+                                'validation_rules': f.validation_rules if hasattr(f, 'validation_rules') else f.get('validation_rules', [])
+                            }
+                            for f in (t.fields if hasattr(t, 'fields') else t.get('fields', []))
+                        ]
+                    }
+                    for t in targets
+                ]
+            return targets
+        return []
 
     def _validate_format(self, value: Any, expected_type: str,
                          rules: Optional[List[str]] = None) -> bool:
@@ -420,10 +452,11 @@ class Verifier:
             return 0.0
 
         required_fields = set()
-        for target in self.spec.targets:
-            for field in target.fields:
-                if field.required:
-                    required_fields.add(field.name)
+        targets = self._get_targets()
+        for target in targets:
+            for field in target.get('fields', []):
+                if field.get('required', False):
+                    required_fields.add(field.get('name'))
 
         if not required_fields:
             return 1.0
@@ -445,16 +478,22 @@ class Verifier:
         total_fields = 0
         valid_fields = 0
 
+        targets = self._get_targets()
         for item in data:
-            for target in self.spec.targets:
-                for field in target.fields:
-                    if field.name in item:
+            for target in targets:
+                for field in target.get('fields', []):
+                    field_name = field.get('name')
+                    if field_name in item:
                         total_fields += 1
-                        if self._validate_format(
-                            item[field.name],
-                            field.type.value,
-                            field.validation_rules
-                        ):
+                        field_type = field.get('type')
+                        if isinstance(field_type, str):
+                            if self._validate_format(
+                                item[field_name],
+                                field_type,
+                                field.get('validation_rules', [])
+                            ):
+                                valid_fields += 1
+                        else:
                             valid_fields += 1
 
         return valid_fields / total_fields if total_fields > 0 else 1.0
@@ -478,12 +517,14 @@ class Verifier:
 
         score = 1.0
 
+        targets = self._get_targets()
         for item in data:
-            for target in self.spec.targets:
-                for field in target.fields:
-                    if field.name in item and field.validation_rules:
-                        for rule in field.validation_rules:
-                            if not self._apply_validation_rule(item[field.name], rule):
+            for target in targets:
+                for field in target.get('fields', []):
+                    field_name = field.get('name')
+                    if field_name in item and field.get('validation_rules'):
+                        for rule in field.get('validation_rules', []):
+                            if not self._apply_validation_rule(item[field_name], rule):
                                 score -= 0.1
 
         return max(0.0, score)

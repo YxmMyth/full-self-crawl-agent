@@ -92,3 +92,24 @@ class StateManager:
         """获取状态历史"""
         return self.history[-limit:]
 
+    def add_error(self, error: str) -> None:
+        """添加错误记录"""
+        if 'errors' not in self.current_state:
+            self.current_state['errors'] = []
+        self.current_state['errors'].append({
+            'timestamp': datetime.now().isoformat(),
+            'message': error
+        })
+        self.current_state['last_error'] = error
+
+    def add_extracted_data(self, data: List[Any]) -> None:
+        """添加提取的数据"""
+        if 'extracted_data' not in self.current_state:
+            self.current_state['extracted_data'] = []
+        self.current_state['extracted_data'].extend(data)
+        self.current_state['total_extracted'] = len(self.current_state['extracted_data'])
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典（兼容方法）"""
+        return self.get_state()
+

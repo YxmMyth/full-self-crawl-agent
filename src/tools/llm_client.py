@@ -50,6 +50,13 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self.api_url = self._get_api_url(api_base)
+        # 检测 provider
+        if api_base and 'dashscope' in api_base:
+            self.provider = 'alibaba'
+        elif 'qwen' in model.lower():
+            self.provider = 'alibaba'
+        else:
+            self.provider = 'zhipu'
         self.client = httpx.AsyncClient(timeout=60.0)
         self.call_count = 0
         self.total_tokens = 0
@@ -167,6 +174,7 @@ class LLMClient:
             'call_count': self.call_count,
             'total_tokens': self.total_tokens,
             'model': self.model,
+            'provider': self.provider,
             'api_url': self.api_url
         }
 

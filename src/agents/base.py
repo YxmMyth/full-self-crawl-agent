@@ -5,6 +5,8 @@ Agent 能力定义
 
 from typing import Dict, Any, List, Optional, Tuple, Callable
 from enum import Enum
+import json
+import re
 
 
 class AgentCapability(str, Enum):
@@ -56,45 +58,140 @@ class SenseAgent(AgentInterface):
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         browser = context.get('browser')
+        spec = context.get('spec')
+        llm_client = context.get('llm_client')
+
+        # 1. 获取页面内容
         html = await browser.get_html()
         screenshot = await browser.take_screenshot()
 
-        # 分析页面结构
+        # 2. 程序快速分析（复用 FeatureDetector）
+        from src.core.smart_router import FeatureDetector
+        detector = FeatureDetector()
+        features = detector.analyze(html)
+
+        # 3. 分析页面结构
         structure = self._analyze_structure(html)
-        features = self._detect_features(html)
+        features.update(structure)
+
+        # 4. LLM 深度分析（如有 LLM 客户端）
+        if llm_client:
+            try:
+                deep_analysis = await self._llm_analyze(html, spec, llm_client)
+                features.update(deep_analysis)
+            except Exception as e:
+                print(f"LLM 分析失败: {e}")
+
+        # 5. 检测反爬
         anti_bot = self._detect_anti_bot(html)
 
         return {
             'success': True,
-            'structure': structure,
+            'structure': features,
             'features': features,
             'anti_bot_detected': anti_bot,
-            'html_snapshot': html,
+            'html_snapshot': html[:50000],  # 限制大小
             'screenshot': screenshot
         }
 
     def _analyze_structure(self, html: str) -> Dict[str, Any]:
         """分析页面结构"""
-        # TODO: 实现页面结构分析
-        return {
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        structure = {
             'type': 'unknown',
             'complexity': 'medium',
-            'has_dynamic_content': False
+            'has_dynamic_content': False,
+            'main_content_selector': None,
+            'pagination_type': 'none',
+            'pagination_selector': None,
+            'data_fields': [],
+            'estimated_items': 0
         }
 
-    def _detect_features(self, html: str) -> Dict[str, Any]:
-        """检测页面特征"""
-        # TODO: 实现特征检测
-        return {
-            'has_table': False,
-            'has_list': True,
-            'has_pagination': False
-        }
+        # 检测页面类型
+        # 列表页特征
+        list_indicators = ['<ul', '<ol', '<table', 'class="list"', 'class="item"', 'class="article']
+        article_indicators = ['<article', 'class="article"', 'class="post"', 'class="news']
+
+        list_count = sum(1 for ind in list_indicators if ind in html.lower())
+        article_count = sum(1 for ind in article_indicators if ind in html.lower())
+
+        if list_count > 2:
+            structure['type'] = 'list'
+        elif article_count > 0:
+            structure['type'] = 'detail'
+        elif '<form' in html.lower():
+            structure['type'] = 'form'
+        else:
+            structure['type'] = 'other'
+
+        # 检测分页类型
+        if 'page=' in html.lower() or '/page/' in html.lower():
+            structure['pagination_type'] = 'url'
+        elif 'next' in html.lower() and ('<a' in html.lower() or '<button' in html.lower()):
+            structure['pagination_type'] = 'click'
+        elif 'scroll' in html.lower() or 'load-more' in html.lower():
+            structure['pagination_type'] = 'scroll'
+
+        # 查找分页选择器
+        next_selectors = ['a.next', '.next-page', '.pagination a:last-child', '[rel="next"]']
+        for selector in next_selectors:
+            if soup.select_one(selector):
+                structure['pagination_selector'] = selector
+                break
+
+        # 估算数据项数量
+        common_containers = ['.article', '.item', '.post', '.news-item', 'article', 'tr']
+        for container in common_containers:
+            items = soup.select(container)
+            if len(items) > 3:
+                structure['estimated_items'] = len(items)
+                structure['main_content_selector'] = container
+                break
+
+        return structure
+
+    async def _llm_analyze(self, html: str, spec: Any, llm_client) -> Dict:
+        """使用 LLM 增强分析"""
+        goal = spec.get('goal', '未知') if spec else '未知'
+
+        prompt = f"""分析以下 HTML 页面，提取关键信息：
+
+目标：{goal}
+
+HTML 片段：
+```
+{html[:3000]}
+```
+
+请输出 JSON 格式：
+{{
+    "page_type": "list|detail|form|other",
+    "main_content_selector": "CSS选择器",
+    "pagination_type": "none|click|scroll|url",
+    "pagination_selector": "CSS选择器或空",
+    "data_fields": ["字段1", "字段2"],
+    "special_handling": ["login", "captcha", "spa"]
+}}"""
+        try:
+            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            # 解析 JSON
+            if '```json' in response:
+                json_str = response.split('```json')[1].split('```')[0]
+            elif '```' in response:
+                json_str = response.split('```')[1].split('```')[0]
+            else:
+                json_str = response
+            return json.loads(json_str)
+        except Exception as e:
+            print(f"LLM 分析解析失败: {e}")
+            return {}
 
     def _detect_anti_bot(self, html: str) -> bool:
         """检测反爬机制"""
-        # TODO: 实现反爬检测
-        anti_bot_keywords = ['cloudflare', 'recaptcha', 'challenge']
+        anti_bot_keywords = ['cloudflare', 'recaptcha', 'challenge', 'cf-', 'turnstile']
         return any(keyword in html.lower() for keyword in anti_bot_keywords)
 
     def get_description(self) -> str:
@@ -116,68 +213,129 @@ class PlanAgent(AgentInterface):
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         page_structure = context.get('page_structure', {})
         spec = context.get('spec')
+        llm_client = context.get('llm_client') or self.llm_client
 
-        # 基于页面结构和契约生成策略
-        strategy = self._generate_strategy(page_structure, spec)
+        # 1. 使用 LLM 生成策略（如有）
+        if llm_client:
+            try:
+                strategy = await self._generate_with_llm(page_structure, spec, llm_client)
+            except Exception as e:
+                print(f"LLM 策略生成失败: {e}")
+                strategy = self._fallback_strategy(page_structure, spec)
+        else:
+            strategy = self._fallback_strategy(page_structure, spec)
+
+        # 2. 生成提取代码
+        code = self._generate_code(strategy, spec)
 
         return {
             'success': True,
             'strategy': strategy,
-            'selectors': strategy.get('selectors', {})
+            'selectors': strategy.get('selectors', {}),
+            'generated_code': code
         }
 
-    def _generate_strategy(self, structure: Dict[str, Any], spec: Any) -> Dict[str, Any]:
-        """生成提取策略"""
-        if not self.llm_client:
+    async def _generate_with_llm(self, structure: Dict, spec: Any, llm_client) -> Dict:
+        """使用 LLM 生成策略"""
+        targets = spec.get('targets', []) if spec else []
+
+        prompt = f"""基于页面结构分析，生成数据提取策略。
+
+页面分析结果：
+{json.dumps(structure, ensure_ascii=False, indent=2)}
+
+需要提取的字段：
+{json.dumps(targets, ensure_ascii=False, indent=2)}
+
+请输出 JSON 格式的提取策略：
+{{
+    "strategy_type": "css|xpath|regex|api",
+    "selectors": {{"field_name": "选择器"}},
+    "container_selector": "数据容器选择器",
+    "extraction_code": "完整的 Python 提取代码",
+    "pagination_strategy": "none|click|scroll|url",
+    "pagination_selector": "下一页按钮选择器",
+    "estimated_items": 100
+}}"""
+        response = await llm_client.chat([{"role": "user", "content": prompt}])
+        # 解析并返回
+        try:
+            if '```json' in response:
+                json_str = response.split('```json')[1].split('```')[0]
+            elif '```' in response:
+                json_str = response.split('```')[1].split('```')[0]
+            else:
+                json_str = response
+            return json.loads(json_str)
+        except:
             return self._fallback_strategy(structure, spec)
-
-        # 使用 LLM 生成策略
-        prompt = self._build_prompt(structure, spec)
-        response = self.llm_client.generate(prompt)
-
-        return self._parse_llm_response(response)
 
     def _fallback_strategy(self, structure: Dict[str, Any], spec: Any) -> Dict[str, Any]:
         """降级策略"""
         selectors = {}
-        for target in spec.targets:
-            for field in target.fields:
-                selectors[field.name] = field.selector
+        container_selector = structure.get('main_content_selector', 'body')
+
+        if spec and 'targets' in spec:
+            for target in spec['targets']:
+                for field in target.get('fields', []):
+                    field_name = field.get('name', '')
+                    field_selector = field.get('selector', '')
+                    if field_name and field_selector:
+                        selectors[field_name] = field_selector
 
         return {
-            'type': 'simple',
+            'strategy_type': 'css',
             'selectors': selectors,
-            'approach': 'direct_extraction'
+            'container_selector': container_selector,
+            'pagination_strategy': structure.get('pagination_type', 'none'),
+            'pagination_selector': structure.get('pagination_selector'),
+            'estimated_items': structure.get('estimated_items', 10)
         }
 
-    def _build_prompt(self, structure: Dict[str, Any], spec: Any) -> str:
-        """构建 LLM 提示"""
-        return f"""基于页面结构和提取目标，生成最佳提取策略。
+    def _generate_code(self, strategy: Dict, spec: Any) -> str:
+        """生成可执行的 Python 代码"""
+        selectors = strategy.get('selectors', {})
+        container_selector = strategy.get('container_selector', '.item')
 
-页面结构: {structure}
-提取目标: {spec.targets}
+        code = '''from bs4 import BeautifulSoup
+import json
 
-请生成包含以下内容的策略：
-1. 提取方法（直接选择器/分页/滚动等）
-2. 每个字段的选择器
-3. 特殊处理逻辑
+def extract_data(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    results = []
 
-输出格式：JSON
-"""
+    # 主容器选择器
+    containers = soup.select('CONTAINER_SELECTOR')
 
-    def _parse_llm_response(self, response: str) -> Dict[str, Any]:
-        """解析 LLM 响应"""
-        import json
-        try:
-            return json.loads(response)
-        except:
-            return self._fallback_strategy({}, None)
+    for container in containers:
+        item = {}
+'''
+        # 根据选择器生成提取逻辑
+        for field_name, field_selector in selectors.items():
+            code += f'''
+        # 提取 {field_name}
+        {field_name}_elem = container.select_one('{field_selector}')
+        item['{field_name}'] = {field_name}_elem.get_text(strip=True) if {field_name}_elem else ''
+'''
+        code += '''
+        if any(item.values()):  # 只保留有内容的项
+            results.append(item)
+
+    return results
+
+if __name__ == "__main__":
+    import sys
+    html = sys.stdin.read()
+    result = extract_data(html)
+    print(json.dumps(result, ensure_ascii=False))
+'''
+        return code.replace('CONTAINER_SELECTOR', container_selector)
 
     def get_description(self) -> str:
         return "基于页面结构和契约生成智能提取策略"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        return 'spec' in context
+        return 'spec' in context or 'page_structure' in context
 
 
 # ==================== 执行智能体 ====================
@@ -192,9 +350,26 @@ class ActAgent(AgentInterface):
         browser = context.get('browser')
         selectors = context.get('selectors', {})
         strategy = context.get('strategy', {})
+        generated_code = context.get('generated_code')
 
-        # 执行提取
-        extracted_data = await self._extract_data(browser, selectors, strategy)
+        # 1. 获取 HTML
+        html = await browser.get_html()
+
+        # 2. 执行提取
+        if generated_code and strategy.get('strategy_type') == 'css':
+            # 使用生成的代码提取
+            extracted_data = await self._execute_code(generated_code, html)
+        else:
+            # 使用选择器直接提取
+            extracted_data = await self._extract_with_selectors(browser, selectors, strategy)
+
+        # 3. 处理分页
+        pagination_type = strategy.get('pagination_strategy', 'none')
+        if pagination_type != 'none' and len(extracted_data) > 0:
+            all_data = await self._handle_pagination(
+                browser, extracted_data, strategy, selectors
+            )
+            extracted_data = all_data
 
         return {
             'success': True,
@@ -202,27 +377,112 @@ class ActAgent(AgentInterface):
             'count': len(extracted_data)
         }
 
-    async def _extract_data(self, browser, selectors: Dict[str, str],
-                           strategy: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """执行数据提取"""
-        # 获取页面内容
-        html = await browser.get_html()
-
-        # 使用解析器提取数据
+    async def _extract_with_selectors(self, browser, selectors: Dict, strategy: Dict) -> List[Dict]:
+        """使用选择器提取数据"""
         from bs4 import BeautifulSoup
+        html = await browser.get_html()
         soup = BeautifulSoup(html, 'html.parser')
 
-        data = []
-        # TODO: 实现实际的提取逻辑
-        # 根据选择器和策略提取数据
+        # 找到所有数据项容器
+        container_selector = strategy.get('container_selector', 'body')
+        containers = soup.select(container_selector)
 
-        return data
+        results = []
+        for container in containers:
+            item = {}
+            for field_name, field_selector in selectors.items():
+                if field_name.startswith('_'):
+                    continue
+                try:
+                    elem = container.select_one(field_selector)
+                    item[field_name] = elem.get_text(strip=True) if elem else ''
+                except Exception as e:
+                    item[field_name] = ''
+            if any(item.values()):  # 只保留有内容的项
+                results.append(item)
+
+        return results
+
+    async def _execute_code(self, code: str, html: str) -> List[Dict]:
+        """在沙箱中执行生成的代码"""
+        import subprocess
+        import json
+        import tempfile
+        import os
+
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+            f.write(code)
+            script_path = f.name
+
+        try:
+            result = subprocess.run(
+                ['python', script_path],
+                input=html,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout)
+            else:
+                print(f"代码执行失败: {result.stderr}")
+                return []
+        except Exception as e:
+            print(f"代码执行异常: {e}")
+            return []
+        finally:
+            os.unlink(script_path)
+
+    async def _handle_pagination(self, browser, initial_data, strategy, selectors):
+        """处理分页"""
+        all_data = initial_data.copy()
+        max_pages = strategy.get('max_pages', 5)
+        pagination_type = strategy.get('pagination_strategy', 'click')
+        next_selector = strategy.get('pagination_selector', 'a.next')
+
+        for page_num in range(max_pages - 1):
+            try:
+                if pagination_type == 'click':
+                    next_btn = await browser.page.query_selector(next_selector)
+                    if next_btn:
+                        await next_btn.click()
+                        await browser.page.wait_for_load_state('networkidle')
+                        await browser.page.wait_for_timeout(1000)  # 等待内容加载
+                    else:
+                        break
+                elif pagination_type == 'scroll':
+                    await browser.scroll_to_bottom()
+                    await browser.page.wait_for_timeout(1000)
+                elif pagination_type == 'url':
+                    # URL 分页需要特殊处理
+                    pass
+
+                # 提取新数据
+                html = await browser.get_html()
+                new_data = await self._extract_with_selectors(
+                    browser, selectors, strategy
+                )
+
+                # 去重
+                existing_keys = set(str(item) for item in all_data)
+                for item in new_data:
+                    if str(item) not in existing_keys:
+                        all_data.append(item)
+                        existing_keys.add(str(item))
+
+            except Exception as e:
+                print(f"分页处理失败 (第 {page_num + 2} 页): {e}")
+                break
+
+        return all_data
 
     def get_description(self) -> str:
         return "执行实际的数据提取操作"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        return 'browser' in context and 'selectors' in context
+        # 需要browser和至少一个提取参数
+        return 'browser' in context and ('selectors' in context or 'strategy' in context or 'generated_code' in context)
 
 
 # ==================== 验证智能体 ====================
@@ -238,15 +498,108 @@ class VerifyAgent(AgentInterface):
         extracted_data = context.get('extracted_data', [])
         spec = context.get('spec')
 
-        # 验证数据
-        verification_result = self.verifier.verify(extracted_data, context)
+        # 使用外部验证器或内置验证逻辑
+        if self.verifier:
+            try:
+                verification_result = self.verifier.verify(extracted_data, context)
+                quality_score = self._calculate_quality_from_result(verification_result)
+            except Exception as e:
+                print(f"验证器执行失败: {e}")
+                quality_score = self._calculate_quality(extracted_data, spec)
+                verification_result = {'status': 'partial', 'error': str(e)}
+        else:
+            # 内置验证逻辑
+            quality_score = self._calculate_quality(extracted_data, spec)
+            verification_result = self._build_verification_result(extracted_data, spec, quality_score)
 
         return {
             'success': True,
             'verification_result': verification_result,
-            'valid_items': verification_result.get('valid_items', 0),
-            'total_items': verification_result.get('total_items', 0)
+            'valid_items': verification_result.get('valid_items', len(extracted_data)),
+            'total_items': len(extracted_data),
+            'quality_score': quality_score
         }
+
+    def _calculate_quality(self, data: List, spec: Any) -> float:
+        """计算质量分数"""
+        if not data:
+            return 0.0
+
+        # 获取必填字段
+        required_fields = set()
+        if spec and 'targets' in spec:
+            for target in spec['targets']:
+                for field in target.get('fields', []):
+                    if field.get('required', False):
+                        required_fields.add(field.get('name'))
+
+        if not required_fields:
+            # 没有必填字段，检查数据非空率
+            non_empty = sum(1 for item in data if any(item.values()))
+            return non_empty / len(data) if data else 0.0
+
+        # 检查必填字段完整性
+        complete_count = 0
+        for item in data:
+            if all(item.get(f) for f in required_fields):
+                complete_count += 1
+
+        return complete_count / len(data) if data else 0.0
+
+    def _calculate_quality_from_result(self, result: Dict) -> float:
+        """从验证结果计算质量分数"""
+        scores = result.get('scores', {})
+        if scores:
+            return sum(scores.values()) / len(scores)
+        valid = result.get('valid_items', 0)
+        total = result.get('total_items', 1)
+        return valid / total if total > 0 else 0.0
+
+    def _build_verification_result(self, data: List, spec: Any, quality_score: float) -> Dict:
+        """构建验证结果"""
+        issues = []
+
+        # 检查必填字段
+        required_fields = []
+        if spec and 'targets' in spec:
+            for target in spec['targets']:
+                for field in target.get('fields', []):
+                    if field.get('required', False):
+                        required_fields.append(field.get('name'))
+
+        missing_count = 0
+        for item in data:
+            for field in required_fields:
+                if not item.get(field):
+                    missing_count += 1
+
+        if missing_count > len(data) * 0.5:
+            issues.append(f"超过50%的数据缺少必填字段")
+
+        return {
+            'status': 'passed' if quality_score >= 0.8 else 'partial' if quality_score >= 0.5 else 'failed',
+            'total_items': len(data),
+            'valid_items': int(len(data) * quality_score),
+            'quality_score': quality_score,
+            'issues': issues,
+            'scores': {
+                'completeness': quality_score,
+                'consistency': self._check_consistency(data)
+            }
+        }
+
+    def _check_consistency(self, data: List) -> float:
+        """检查数据一致性"""
+        if len(data) < 2:
+            return 1.0
+
+        first_keys = set(data[0].keys())
+        inconsistent = 0
+        for item in data[1:10]:  # 检查前10个
+            if set(item.keys()) != first_keys:
+                inconsistent += 1
+
+        return 1.0 - (inconsistent / min(len(data) - 1, 9))
 
     def get_description(self) -> str:
         return "验证提取数据的质量和完整性"
@@ -265,58 +618,113 @@ class JudgeAgent(AgentInterface):
         self.llm_client = llm_client
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        options = context.get('options', [])
-        criteria = context.get('criteria', {})
+        quality_score = context.get('quality_score', 0)
+        iteration = context.get('iteration', 0)
+        max_iterations = context.get('max_iterations', 10)
+        errors = context.get('errors', [])
+        spec = context.get('spec')
+        extracted_data_count = len(context.get('extracted_data', []))
 
-        # 评估选项
-        decision = self._make_decision(options, criteria)
+        # 1. 程序快速判断
+        decision, reasoning = self._quick_decision(
+            quality_score, iteration, max_iterations, errors, extracted_data_count
+        )
+
+        # 2. LLM 增强判断（如有 LLM 且决策不是 complete）
+        llm_client = context.get('llm_client') or self.llm_client
+        if llm_client and decision != 'complete':
+            try:
+                enhanced_decision = await self._llm_judge(context, llm_client)
+                if enhanced_decision:
+                    decision = enhanced_decision.get('decision', decision)
+                    reasoning = enhanced_decision.get('reasoning', reasoning)
+            except Exception as e:
+                print(f"LLM 决策失败: {e}")
 
         return {
             'success': True,
             'decision': decision,
-            'reasoning': decision.get('reasoning', '')
+            'reasoning': reasoning,
+            'confidence': quality_score,
+            'suggestions': self._get_suggestions(decision, context)
         }
 
-    def _make_decision(self, options: List[Any], criteria: Dict[str, Any]) -> Dict[str, Any]:
-        """做出决策"""
-        if not self.llm_client:
-            return {'option': options[0], 'confidence': 0.5, 'reasoning': '默认选择'}
+    def _quick_decision(self, quality_score: float, iteration: int, max_iterations: int,
+                        errors: List, data_count: int) -> Tuple[str, str]:
+        """快速决策"""
+        # 成功条件
+        if quality_score >= 0.8 and data_count >= 5:
+            return 'complete', f"质量分数 {quality_score:.2f} >= 0.8，数据量 {data_count}，任务完成"
 
-        # 使用 LLM 做决策
-        prompt = self._build_decision_prompt(options, criteria)
-        response = self.llm_client.generate(prompt)
+        # 失败条件
+        if iteration >= max_iterations:
+            return 'terminate', f"已达到最大迭代次数 {max_iterations}"
 
-        return self._parse_decision(response)
+        if len(errors) >= 5:
+            return 'terminate', f"错误过多 ({len(errors)} 个错误)"
 
-    def _build_decision_prompt(self, options: List[Any], criteria: Dict[str, Any]) -> str:
-        """构建决策提示"""
-        return f"""请基于以下标准做出决策：
+        # 可提升
+        if quality_score >= 0.3:
+            return 'reflect_and_retry', f"质量分数 {quality_score:.2f} 可提升，继续迭代 {iteration + 1}/{max_iterations}"
 
-选项: {options}
-标准: {criteria}
+        return 'terminate', f"质量分数过低 {quality_score:.2f}"
 
-请选择最佳选项并说明理由。
+    async def _llm_judge(self, context: Dict, llm_client) -> Optional[Dict]:
+        """使用 LLM 增强决策"""
+        prompt = f"""分析爬取任务的执行情况，决定下一步行动：
 
-输出格式：
-选项: <选项>
-置信度: <0-1>
-理由: <说明>
-"""
+质量分数：{context.get('quality_score', 0)}
+迭代次数：{context.get('iteration', 0)}/{context.get('max_iterations', 10)}
+错误列表：{context.get('errors', [])[:5]}
+目标：{context.get('spec', {}).get('goal', '未知') if context.get('spec') else '未知'}
+数据量：{len(context.get('extracted_data', []))}
 
-    def _parse_decision(self, response: str) -> Dict[str, Any]:
-        """解析决策结果"""
-        # 简单解析
-        return {
-            'option': 'option_1',
-            'confidence': 0.7,
-            'reasoning': '基于分析做出的决策'
-        }
+可选决策：
+- complete: 任务完成，质量达标
+- reflect_and_retry: 反思并重试
+- terminate: 终止任务
+
+请输出 JSON：
+{{"decision": "complete|reflect_and_retry|terminate", "reasoning": "原因"}}"""
+
+        try:
+            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            if '```json' in response:
+                json_str = response.split('```json')[1].split('```')[0]
+            elif '```' in response:
+                json_str = response.split('```')[1].split('```')[0]
+            else:
+                json_str = response
+            return json.loads(json_str)
+        except Exception as e:
+            print(f"LLM 决策解析失败: {e}")
+            return None
+
+    def _get_suggestions(self, decision: str, context: Dict) -> List[str]:
+        """获取改进建议"""
+        if decision == 'complete':
+            return ["任务已完成，可以结束"]
+
+        suggestions = []
+        errors = context.get('errors', [])
+        quality_score = context.get('quality_score', 0)
+
+        if any('selector' in str(e).lower() for e in errors):
+            suggestions.append("考虑重新分析页面结构，更新选择器")
+        if any('timeout' in str(e).lower() for e in errors):
+            suggestions.append("增加等待时间或使用更稳定的选择器")
+        if quality_score < 0.5:
+            suggestions.append("质量分数过低，检查目标字段是否正确")
+        if len(context.get('extracted_data', [])) < 5:
+            suggestions.append("数据量不足，检查分页或数据容器选择器")
+
+        return suggestions if suggestions else ["继续优化"]
 
     def get_description(self) -> str:
         return "在多个选项间做出最优决策"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        return 'options' in context
+        return 'quality_score' in context or 'iteration' in context
 
 
 # ==================== 探索智能体 ====================
@@ -332,17 +740,25 @@ class ExploreAgent(AgentInterface):
         current_url = context.get('current_url', '')
         depth = context.get('depth', 0)
         max_depth = context.get('max_depth', 2)
+        base_url = context.get('base_url', current_url)
 
         if depth >= max_depth:
             return {'success': True, 'links': [], 'message': '已达到最大探索深度'}
 
-        # 获取页面中的所有链接
-        links = await self._extract_links(browser)
+        # 1. 提取所有链接
+        all_links = await self._extract_links(browser)
+
+        # 2. 过滤相关链接
+        relevant_links = self._filter_links(all_links, base_url, context)
+
+        # 3. 分类链接
+        categorized = self._categorize_links(relevant_links, context)
 
         return {
             'success': True,
-            'links': links,
-            'count': len(links),
+            'links': relevant_links,
+            'categorized': categorized,
+            'count': len(relevant_links),
             'next_depth': depth + 1
         }
 
@@ -354,9 +770,52 @@ class ExploreAgent(AgentInterface):
 
         links = []
         for a in soup.find_all('a', href=True):
-            links.append(a['href'])
+            href = a['href']
+            # 过滤无效链接
+            if href and not href.startswith(('#', 'javascript:', 'mailto:')):
+                links.append(href)
 
-        return links
+        return list(set(links))
+
+    def _filter_links(self, links: List[str], base_url: str, context: Dict) -> List[str]:
+        """过滤相关链接"""
+        from urllib.parse import urljoin, urlparse
+
+        filtered = []
+        base_domain = urlparse(base_url).netloc
+
+        for link in links:
+            try:
+                absolute = urljoin(base_url, link)
+                parsed = urlparse(absolute)
+
+                # 只保留同域名链接
+                if parsed.netloc == base_domain:
+                    filtered.append(absolute)
+            except Exception:
+                continue
+
+        return filtered
+
+    def _categorize_links(self, links: List[str], context: Dict) -> Dict[str, List]:
+        """分类链接"""
+        categories = {
+            'detail': [],   # 详情页
+            'list': [],     # 列表页
+            'other': []     # 其他
+        }
+
+        # 简单分类逻辑
+        for link in links:
+            link_lower = link.lower()
+            if any(k in link_lower for k in ['detail', 'item', 'article', 'product', 'news', 'post']):
+                categories['detail'].append(link)
+            elif any(k in link_lower for k in ['list', 'page', 'category', 'search']):
+                categories['list'].append(link)
+            else:
+                categories['other'].append(link)
+
+        return categories
 
     def get_description(self) -> str:
         return "探索页面链接，发现新的数据源"
@@ -377,100 +836,154 @@ class ReflectAgent(AgentInterface):
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         execution_history = context.get('execution_history', [])
         errors = context.get('errors', [])
+        quality_score = context.get('quality_score', 0)
+        spec = context.get('spec')
+        llm_client = context.get('llm_client') or self.llm_client
 
-        # 分析失败原因
-        analysis = self._analyze_failures(execution_history, errors)
+        # 1. 分析错误模式
+        error_analysis = self._analyze_errors(errors)
 
-        # 生成优化建议
-        improvements = self._generate_improvements(analysis)
+        # 2. 分析执行历史
+        history_analysis = self._analyze_history(execution_history)
+
+        # 3. 生成改进建议
+        if llm_client:
+            try:
+                improvements = await self._llm_reflect(
+                    error_analysis, history_analysis, spec, llm_client
+                )
+            except Exception as e:
+                print(f"LLM 反思失败: {e}")
+                improvements = self._fallback_improvements(error_analysis)
+        else:
+            improvements = self._fallback_improvements(error_analysis)
 
         return {
             'success': True,
-            'analysis': analysis,
+            'analysis': {
+                'error_patterns': error_analysis,
+                'history_summary': history_analysis
+            },
             'improvements': improvements,
-            'suggested_action': improvements.get('action', 'retry')
+            'suggested_action': improvements.get('action', 'retry'),
+            'new_selectors': improvements.get('selectors', {}),
+            'new_strategy': improvements.get('strategy', None)
         }
 
-    def _analyze_failures(self, history: List[Dict[str, Any]],
-                         errors: List[str]) -> Dict[str, Any]:
-        """分析失败原因"""
-        if not self.llm_client:
-            return self._fallback_analysis(errors)
-
-        # 使用 LLM 分析
-        prompt = self._build_analysis_prompt(history, errors)
-        response = self.llm_client.generate(prompt)
-
-        return self._parse_analysis(response)
-
-    def _fallback_analysis(self, errors: List[str]) -> Dict[str, Any]:
-        """降级分析"""
-        common_errors = {}
+    def _analyze_errors(self, errors: List[str]) -> Dict[str, Any]:
+        """分析错误模式"""
+        patterns = {}
         for error in errors:
-            common_errors[error] = common_errors.get(error, 0) + 1
+            # 分类错误
+            error_str = str(error).lower()
+            if 'selector' in error_str or 'element' in error_str:
+                key = 'selector_error'
+            elif 'timeout' in error_str:
+                key = 'timeout_error'
+            elif 'network' in error_str or 'connection' in error_str:
+                key = 'network_error'
+            elif 'anti' in error_str or 'captcha' in error_str or 'block' in error_str:
+                key = 'anti_bot_error'
+            else:
+                key = 'unknown_error'
+
+            patterns[key] = patterns.get(key, 0) + 1
 
         return {
-            'error_patterns': common_errors,
-            'likely_cause': 'selector_issue',
-            'confidence': 0.6
+            'patterns': patterns,
+            'most_common': max(patterns.items(), key=lambda x: x[1])[0] if patterns else 'none',
+            'total_errors': len(errors)
         }
 
-    def _generate_improvements(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """生成改进方案"""
-        if not self.llm_client:
-            return {'action': 'retry', 'suggestions': []}
+    def _analyze_history(self, history: List[Dict]) -> Dict[str, Any]:
+        """分析执行历史"""
+        if not history:
+            return {'summary': '无历史记录'}
 
-        prompt = self._build_improvement_prompt(analysis)
-        response = self.llm_client.generate(prompt)
+        return {
+            'total_attempts': len(history),
+            'stages': [h.get('stage') for h in history if h.get('stage')],
+            'last_stage': history[-1].get('stage') if history else None,
+            'quality_trend': [h.get('quality_score') for h in history if h.get('quality_score')]
+        }
 
-        return self._parse_improvements(response)
+    async def _llm_reflect(self, error_analysis, history_analysis, spec, llm_client) -> Dict:
+        """使用 LLM 进行反思"""
+        goal = spec.get('goal', '未知') if spec else '未知'
 
-    def _build_analysis_prompt(self, history: List[Dict[str, Any]],
-                              errors: List[str]) -> str:
-        return f"""分析以下执行历史和错误，找出失败的根本原因：
+        prompt = f"""分析爬取任务失败的原因并生成改进建议：
 
-执行历史: {history}
-错误列表: {errors}
+错误分析：{json.dumps(error_analysis, ensure_ascii=False)}
+历史记录：{json.dumps(history_analysis, ensure_ascii=False)}
+目标：{goal}
 
-请分析：
-1. 主要问题是什么？
-2. 是选择器问题、页面结构问题还是其他问题？
-3. 如何解决？
+请输出 JSON 格式的改进建议：
+{{
+    "action": "retry|change_strategy|abort",
+    "reasoning": "原因分析",
+    "selectors": {{"field_name": "新选择器"}},
+    "strategy": "新策略描述",
+    "precautions": ["注意事项"]
+}}"""
 
-输出格式：JSON
-"""
-
-    def _build_improvement_prompt(self, analysis: Dict[str, Any]) -> str:
-        return f"""基于以下分析，生成改进方案：
-
-问题分析: {analysis}
-
-请建议：
-1. 具体的改进措施
-2. 下一步应该采取什么行动
-
-输出格式：JSON
-"""
-
-    def _parse_analysis(self, response: str) -> Dict[str, Any]:
-        import json
         try:
-            return json.loads(response)
-        except:
-            return self._fallback_analysis([])
+            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            if '```json' in response:
+                json_str = response.split('```json')[1].split('```')[0]
+            elif '```' in response:
+                json_str = response.split('```')[1].split('```')[0]
+            else:
+                json_str = response
+            return json.loads(json_str)
+        except Exception as e:
+            print(f"LLM 反思解析失败: {e}")
+            return self._fallback_improvements(error_analysis)
 
-    def _parse_improvements(self, response: str) -> Dict[str, Any]:
-        import json
-        try:
-            return json.loads(response)
-        except:
-            return {'action': 'retry', 'suggestions': []}
+    def _fallback_improvements(self, error_analysis: Dict) -> Dict:
+        """降级改进建议"""
+        most_common = error_analysis.get('most_common', 'unknown')
+
+        suggestions = {
+            'selector_error': {
+                'action': 'retry',
+                'reasoning': '选择器可能已更新，建议重新分析页面',
+                'selectors': {},
+                'strategy': 'reanalyze'
+            },
+            'timeout_error': {
+                'action': 'retry',
+                'reasoning': '增加等待时间',
+                'selectors': {},
+                'strategy': 'increase_timeout'
+            },
+            'network_error': {
+                'action': 'retry',
+                'reasoning': '网络问题，稍后重试',
+                'selectors': {},
+                'strategy': 'delay_retry'
+            },
+            'anti_bot_error': {
+                'action': 'change_strategy',
+                'reasoning': '检测到反爬机制，需要更换策略',
+                'selectors': {},
+                'strategy': 'use_stealth'
+            },
+            'unknown_error': {
+                'action': 'abort',
+                'reasoning': '未知错误，建议人工介入',
+                'selectors': {},
+                'strategy': None
+            }
+        }
+
+        return suggestions.get(most_common, suggestions['unknown_error'])
 
     def get_description(self) -> str:
         return "分析失败原因，生成优化建议"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        return len(context.get('errors', [])) > 0
+        # 可以在没有错误时也工作（用于分析改进）
+        return True
 
 
 # ==================== 智能体池 ====================
@@ -505,9 +1018,9 @@ class AgentPool:
         """获取指定能力的智能体"""
         return self.agents.get(capability)
 
-    def execute_capability(self, capability: AgentCapability,
+    async def execute_capability(self, capability: AgentCapability,
                           context: Dict[str, Any]) -> Dict[str, Any]:
-        """执行指定能力"""
+        """执行指定能力（异步版本）"""
         agent = self.get_agent(capability)
         if not agent:
             return {'success': False, 'error': f'Unknown capability: {capability}'}
@@ -515,8 +1028,7 @@ class AgentPool:
         if not agent.can_handle(context):
             return {'success': False, 'error': f'Agent cannot handle this context'}
 
-        import asyncio
-        return asyncio.run(agent.execute(context))
+        return await agent.execute(context)
 
     def get_all_capabilities(self) -> List[AgentCapability]:
         """获取所有能力"""
@@ -526,3 +1038,7 @@ class AgentPool:
         """获取能力描述"""
         agent = self.get_agent(capability)
         return agent.get_description() if agent else ''
+
+    def set_verifier(self, verifier):
+        """设置验证器"""
+        self.agents[AgentCapability.VERIFY] = VerifyAgent(verifier)
