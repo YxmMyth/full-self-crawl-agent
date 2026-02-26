@@ -50,8 +50,9 @@ class SpecLoader:
         # 验证契约
         self._validate_spec(spec_data)
 
-        # 创建并返回冻结的契约对象
-        return SpecContract.from_dict(spec_data)
+        # 返回字典形式的契约数据
+        # 在当前实现中，我们返回字典，因为 SpecContract 是 TypedDict 类型提示
+        return spec_data
 
     def load_state(self, task_id: str) -> StateContract:
         """

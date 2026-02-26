@@ -4,6 +4,7 @@
 
 import asyncio
 import sys
+import os
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -93,11 +94,10 @@ class SelfCrawlingAgent:
         """初始化"""
         # 加载 Spec 契约
         self.spec = self.spec_loader.load_spec(str(self.spec_path))
-        self.task_id = self.spec.task_id
+        self.task_id = self.spec['task_id']
 
         # 创建状态
-        from src.config.contracts import StateContract, SpecContract
-        self.state = StateContract.create_initial(self.task_id, self.spec)
+        self.state = self.state_manager.create_initial_state(self.task_id, self.spec)
 
         # 初始化完成门禁
         from src.core.completion_gate import CompletionGate
@@ -114,7 +114,7 @@ class SelfCrawlingAgent:
         # 创建证据目录
         self.evidence_storage.create_task_dir(self.task_id)
 
-        print(f"✓ 已初始化任务: {self.spec.task_name} ({self.task_id})")
+        print(f"✓ 已初始化任务: {self.spec['task_name']} ({self.task_id})")
         if self.llm_client:
             stats = self.llm_client.get_stats()
             print(f"✓ LLM 客户端: {stats['provider']} - {stats['model']}")
@@ -144,7 +144,7 @@ class SelfCrawlingAgent:
 
             # 导航到起始 URL
             print(f"→ 访问: {self.spec.start_url}")
-            await self.browser.navigate(self.spec.start_url)
+            await self.browser.navigate(self.spec['start_url'])
 
             # 感知页面
             print("→ 感知页面结构...")
