@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_completion_gate_basic():
     """测试完成门禁基础功能"""
-    from core.completion_gate import CompletionGate
+    from src.core.completion_gate import CompletionGate
     
     gate = CompletionGate()
     
@@ -27,7 +27,7 @@ def test_completion_gate_basic():
 
 def test_completion_gate_failed():
     """测试门禁失败情况"""
-    from core.completion_gate import CompletionGate
+    from src.core.completion_gate import CompletionGate
     
     gate = CompletionGate()
     
@@ -41,7 +41,7 @@ def test_completion_gate_failed():
 
 def test_quality_score_gate():
     """测试质量分数门禁"""
-    from core.completion_gate import CompletionGate
+    from src.core.completion_gate import CompletionGate
     
     gate = CompletionGate()
     
@@ -54,7 +54,7 @@ def test_quality_score_gate():
 
 def test_quality_score_gate_failed():
     """测试质量分数门禁失败"""
-    from core.completion_gate import CompletionGate
+    from src.core.completion_gate import CompletionGate
     
     gate = CompletionGate()
     
@@ -67,7 +67,7 @@ def test_quality_score_gate_failed():
 
 def test_sample_count_gate():
     """测试样本数量门禁"""
-    from core.completion_gate import CompletionGate
+    from src.core.completion_gate import CompletionGate
     
     gate = CompletionGate()
     
@@ -80,7 +80,7 @@ def test_sample_count_gate():
 
 def test_gate_decision():
     """测试门禁决策"""
-    from core.completion_gate import GateDecision
+    from src.core.completion_gate import GateDecision
     
     decision_maker = GateDecision()
     
@@ -94,7 +94,7 @@ def test_gate_decision():
 
 def test_gate_decision_failed():
     """测试门禁决策失败情况"""
-    from core.completion_gate import GateDecision
+    from src.core.completion_gate import GateDecision
     
     decision_maker = GateDecision()
     
@@ -111,7 +111,7 @@ def test_gate_decision_failed():
 
 def test_gate_decision_quality():
     """测试门禁决策 - 质量不达标但可修复"""
-    from core.completion_gate import GateDecision
+    from src.core.completion_gate import GateDecision
     
     decision_maker = GateDecision()
     

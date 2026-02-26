@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_html_parser():
     """测试HTML解析器"""
-    from tools.parser import HTMLParser
+    from src.tools.parser import HTMLParser
     
     html = """
     <html>
@@ -45,7 +45,7 @@ def test_html_parser():
 
 def test_evidence_storage():
     """测试证据存储"""
-    from tools.storage import EvidenceStorage
+    from src.tools.storage import EvidenceStorage
     
     # 创建临时目录
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -77,7 +77,7 @@ def test_evidence_storage():
 
 def test_data_export_json():
     """测试JSON导出"""
-    from tools.storage import DataExport
+    from src.tools.storage import DataExport
     import os
     
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,7 +99,7 @@ def test_data_export_json():
 
 def test_data_export_csv():
     """测试CSV导出"""
-    from tools.storage import DataExport
+    from src.tools.storage import DataExport
     import os
     import csv
     
@@ -123,7 +123,7 @@ def test_data_export_csv():
 
 def test_selector_builder():
     """测试选择器构建器"""
-    from tools.parser import SelectorBuilder
+    from src.tools.parser import SelectorBuilder
     
     # 类选择器
     assert SelectorBuilder.class_name('product') == '.product'

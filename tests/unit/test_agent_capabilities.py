@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_agent_pool_initialization():
     """测试智能体池初始化"""
-    from agents.base import AgentPool
+    from src.agents.base import AgentPool
     
     pool = AgentPool()
     
@@ -21,7 +21,7 @@ def test_agent_pool_initialization():
     assert len(capabilities) == 7
     
     # 检查具体能力
-    from agents.base import AgentCapability
+    from src.agents.base import AgentCapability
     assert AgentCapability.SENSE in capabilities
     assert AgentCapability.PLAN in capabilities
     assert AgentCapability.ACT in capabilities
@@ -33,7 +33,7 @@ def test_agent_pool_initialization():
 
 def test_sense_agent_description():
     """测试感知智能体描述"""
-    from agents.base import SenseAgent
+    from src.agents.base import SenseAgent
     
     agent = SenseAgent()
     description = agent.get_description()
@@ -44,7 +44,7 @@ def test_sense_agent_description():
 
 def test_plan_agent_description():
     """测试规划智能体描述"""
-    from agents.base import PlanAgent
+    from src.agents.base import PlanAgent
     
     agent = PlanAgent()
     description = agent.get_description()
@@ -54,7 +54,7 @@ def test_plan_agent_description():
 
 def test_act_agent_description():
     """测试执行智能体描述"""
-    from agents.base import ActAgent
+    from src.agents.base import ActAgent
     
     agent = ActAgent()
     description = agent.get_description()
@@ -64,7 +64,7 @@ def test_act_agent_description():
 
 def test_capability_descriptions():
     """测试所有能力的描述"""
-    from agents.base import AgentPool
+    from src.agents.base import AgentPool
     
     pool = AgentPool()
     
@@ -75,7 +75,7 @@ def test_capability_descriptions():
 
 def test_agent_can_handle():
     """测试智能体能否处理"""
-    from agents.base import SenseAgent, ActAgent
+    from src.agents.base import SenseAgent, ActAgent
     
     sense_agent = SenseAgent()
     act_agent = ActAgent()

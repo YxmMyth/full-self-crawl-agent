@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_ecommerce_spec_loading():
     """测试电商示例Spec加载"""
-    from config.contracts import ContractValidator
+    from src.config.contracts import ContractValidator
     
     spec_path = os.path.join(os.path.dirname(__file__), '..', 'specs', 'example_ecommerce.json')
     
@@ -37,7 +37,7 @@ def test_ecommerce_spec_loading():
 
 def test_news_spec_loading():
     """测试新闻示例Spec加载"""
-    from config.contracts import ContractValidator
+    from src.config.contracts import ContractValidator
     
     spec_path = os.path.join(os.path.dirname(__file__), '..', 'specs', 'example_news.json')
     
@@ -61,7 +61,7 @@ def test_news_spec_loading():
 
 def test_smart_router_with_ecommerce():
     """测试智能路由与电商示例"""
-    from core.smart_router import SmartRouter
+    from src.core.smart_router import SmartRouter
     
     router = SmartRouter()
     
@@ -105,7 +105,7 @@ def test_smart_router_with_ecommerce():
 
 def test_evidence_collection():
     """测试证据收集"""
-    from tools.storage import EvidenceStorage
+    from src.tools.storage import EvidenceStorage
     import tempfile
     import json
     
@@ -140,7 +140,7 @@ def test_evidence_collection():
 
 def test_completion_gate_ecommerce():
     """测试完成门禁 - 电商场景"""
-    from core.completion_gate import CompletionGate, GateDecision
+    from src.core.completion_gate import CompletionGate, GateDecision
     
     gate = CompletionGate()
     decision_maker = GateDecision()

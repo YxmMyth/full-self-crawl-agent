@@ -95,13 +95,13 @@ async def test_smart_router():
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-    from core.smart_router import SmartRouter
+    from src.core.smart_router import SmartRouter
 
     router = SmartRouter()
 
     # 测试特征检测
     print("\n  🧪 测试特征检测...")
-    from core.smart_router import FeatureDetector
+    from src.core.smart_router import FeatureDetector
     detector = FeatureDetector()
     features = detector.analyze(test_html)
 
@@ -139,7 +139,7 @@ async def test_evidence_storage():
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-    from tools.storage import EvidenceStorage
+    from src.tools.storage import EvidenceStorage
     import tempfile
 
     # 创建临时目录

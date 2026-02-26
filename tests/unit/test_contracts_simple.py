@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_spec_factory():
     """测试Spec工厂"""
-    from config.contracts import ContractFactory
+    from src.config.contracts import ContractFactory
     
     spec = ContractFactory.create_spec(
         goal="Test crawl",
@@ -29,7 +29,7 @@ def test_spec_factory():
 
 def test_spec_validation():
     """测试Spec验证"""
-    from config.contracts import ContractValidator
+    from src.config.contracts import ContractValidator
     
     spec = {
         'version': 'v1',
@@ -43,7 +43,7 @@ def test_spec_validation():
 
 def test_spec_validation_missing():
     """测试Spec验证 - 缺少必填字段"""
-    from config.contracts import ContractValidator
+    from src.config.contracts import ContractValidator
     
     spec = {
         'version': 'v1',
@@ -59,7 +59,7 @@ def test_spec_validation_missing():
 
 def test_state_creation():
     """测试状态创建"""
-    from config.contracts import ContractFactory
+    from src.config.contracts import ContractFactory
     
     spec = ContractFactory.create_spec(
         goal="Test",
@@ -79,7 +79,7 @@ def test_state_creation():
 
 def test_routing_validation():
     """测试路由决策验证"""
-    from config.contracts import ContractValidator
+    from src.config.contracts import ContractValidator
     
     decision = {
         'strategy': 'direct_crawl',
@@ -92,7 +92,7 @@ def test_routing_validation():
 
 def test_routing_invalid_rate():
     """测试路由决策验证 - 无效的成功率"""
-    from config.contracts import ContractValidator
+    from src.config.contracts import ContractValidator
     
     decision = {
         'strategy': 'direct_crawl',

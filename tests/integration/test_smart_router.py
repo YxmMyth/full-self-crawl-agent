@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 def test_feature_detector():
     """测试特征检测器"""
-    from core.smart_router import FeatureDetector
+    from src.core.smart_router import FeatureDetector
     
     detector = FeatureDetector()
     
@@ -37,7 +37,7 @@ def test_feature_detector():
 
 def test_direct_crawl_strategy():
     """测试直接爬取策略"""
-    from core.smart_router import SmartRouter
+    from src.core.smart_router import SmartRouter
     
     router = SmartRouter()
     
@@ -64,7 +64,7 @@ def test_direct_crawl_strategy():
 
 def test_routing_stats():
     """测试路由统计"""
-    from core.smart_router import SmartRouter
+    from src.core.smart_router import SmartRouter
     
     router = SmartRouter()
     
@@ -86,7 +86,7 @@ def test_routing_stats():
 
 def test_compose_capabilities():
     """测试能力组合"""
-    from core.smart_router import compose_capabilities
+    from src.core.smart_router import compose_capabilities
     
     # 简单任务
     simple_task = {'special_requirements': []}
@@ -100,7 +100,7 @@ def test_compose_capabilities():
 
 def test_compose_capabilities_with_login():
     """测试带登录需求的能力组合"""
-    from core.smart_router import compose_capabilities
+    from src.core.smart_router import compose_capabilities
     
     task = {'special_requirements': ['login']}
     capabilities = compose_capabilities(task)
@@ -111,7 +111,7 @@ def test_compose_capabilities_with_login():
 
 def test_progressive_explorer():
     """测试渐进式探索"""
-    from core.smart_router import ProgressiveExplorer
+    from src.core.smart_router import ProgressiveExplorer
     
     explorer = ProgressiveExplorer()
     
