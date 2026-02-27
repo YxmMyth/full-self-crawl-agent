@@ -4,6 +4,7 @@
 """
 
 from typing import Dict, Any, List, Optional, Tuple
+import asyncio
 import subprocess
 import tempfile
 import os
@@ -38,6 +39,19 @@ class Executor:
         """
         return self.sandbox.execute(code, timeout)
 
+    async def execute_python_async(self, code: str, timeout: int = 30) -> Dict[str, Any]:
+        """
+        异步执行 Python 代码
+
+        Args:
+            code: Python 代码
+            timeout: 超时时间（秒）
+
+        Returns:
+            执行结果字典
+        """
+        return await self.sandbox.execute_async(code, timeout)
+
     def execute_with_context(self, code: str, context: Dict[str, Any],
                             timeout: int = 30) -> Dict[str, Any]:
         """
@@ -54,6 +68,22 @@ class Executor:
         # 将上下文注入代码
         context_code = self._build_context_code(context, code)
         return self.execute_python(context_code, timeout)
+
+    async def execute_with_context_async(self, code: str, context: Dict[str, Any],
+                                        timeout: int = 30) -> Dict[str, Any]:
+        """
+        异步执行代码并提供上下文
+
+        Args:
+            code: 代码
+            context: 上下文变量
+            timeout: 超时时间（秒）
+
+        Returns:
+            执行结果
+        """
+        context_code = self._build_context_code(context, code)
+        return await self.execute_python_async(context_code, timeout)
 
     def _build_context_code(self, context: Dict[str, Any], code: str) -> str:
         """构建带上下文的代码"""
@@ -76,7 +106,7 @@ class DefaultSandbox:
         pass
 
     def execute(self, code: str, timeout: int = 30) -> Dict[str, Any]:
-        """执行代码"""
+        """执行代码（同步版本）"""
         # 创建临时文件
         with tempfile.NamedTemporaryFile(
             mode='w',
@@ -113,6 +143,75 @@ class DefaultSandbox:
                 'returncode': -1,
                 'error': 'timeout'
             }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': str(e),
+                'returncode': -1,
+                'error': 'execution_error'
+            }
+
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    async def execute_async(self, code: str, timeout: int = 30) -> Dict[str, Any]:
+        """
+        执行代码（异步版本）
+
+        使用 asyncio.create_subprocess_exec 避免阻塞事件循环
+        """
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix='.py',
+            delete=False,
+            encoding='utf-8'
+        ) as f:
+            f.write(code)
+            temp_path = f.name
+
+        try:
+            # 使用异步子进程
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, temp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=os.getcwd()
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=timeout
+                )
+
+                return {
+                    'success': proc.returncode == 0,
+                    'stdout': stdout.decode() if stdout else '',
+                    'stderr': stderr.decode() if stderr else '',
+                    'returncode': proc.returncode,
+                    'execution_time': timeout
+                }
+
+            except asyncio.TimeoutError:
+                # 超时时终止进程
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass
+
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': f'Timeout after {timeout} seconds',
+                    'returncode': -1,
+                    'error': 'timeout'
+                }
 
         except Exception as e:
             return {

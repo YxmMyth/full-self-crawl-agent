@@ -24,7 +24,66 @@ from typing import Dict, Any, List, Optional
 import httpx
 import json
 import os
+import asyncio
 from datetime import datetime
+from enum import Enum
+from dataclasses import dataclass
+
+
+class ErrorType(str, Enum):
+    """错误类型"""
+    NETWORK = "network"  # 网络错误（可重试）
+    RATE_LIMIT = "rate_limit"  # 速率限制（可重试）
+    AUTH = "auth"  # 认证错误（不可重试）
+    INVALID_REQUEST = "invalid_request"  # 请求错误（不可重试）
+    SERVER = "server"  # 服务器错误（可重试）
+    TIMEOUT = "timeout"  # 超时（可重试）
+    UNKNOWN = "unknown"  # 未知错误
+
+
+@dataclass
+class LLMError:
+    """LLM 错误信息"""
+    error_type: ErrorType
+    message: str
+    status_code: Optional[int] = None
+    is_recoverable: bool = True
+    retry_after: Optional[int] = None  # 重试等待时间（秒）
+
+    def __str__(self):
+        return f"[{self.error_type.value}] {self.message}"
+
+
+class LLMException(Exception):
+    """LLM 异常基类"""
+
+    def __init__(self, error: LLMError):
+        self.error = error
+        super().__init__(str(error))
+
+    @property
+    def is_recoverable(self) -> bool:
+        return self.error.is_recoverable
+
+
+class NetworkException(LLMException):
+    """网络错误"""
+    pass
+
+
+class RateLimitException(LLMException):
+    """速率限制"""
+    pass
+
+
+class AuthException(LLMException):
+    """认证错误"""
+    pass
+
+
+class ServerException(LLMException):
+    """服务器错误"""
+    pass
 
 
 class LLMClient:
@@ -36,6 +95,11 @@ class LLMClient:
     - 阿里云百炼通义千问模型 (qwen-max / qwen-plus / qwen-turbo)
     - OpenAI 兼容 API
     """
+
+    # 默认重试配置
+    DEFAULT_MAX_RETRIES = 3
+    DEFAULT_RETRY_DELAY = 1.0
+    DEFAULT_RETRY_MULTIPLIER = 2.0
 
     def __init__(self, api_key: str, model: str = 'glm-4',
                  api_base: Optional[str] = None):
@@ -60,6 +124,8 @@ class LLMClient:
         self.client = httpx.AsyncClient(timeout=60.0)
         self.call_count = 0
         self.total_tokens = 0
+        self.error_count = 0
+        self.retry_count = 0
 
     def _get_api_url(self, api_base: Optional[str]) -> str:
         """获取 API 地址"""
@@ -69,9 +135,60 @@ class LLMClient:
         # 默认智谱 API
         return 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 
+    def _classify_error(self, status_code: Optional[int], error_message: str) -> LLMError:
+        """分类错误"""
+        if status_code == 401 or status_code == 403:
+            return LLMError(
+                error_type=ErrorType.AUTH,
+                message=f"认证失败: {error_message}",
+                status_code=status_code,
+                is_recoverable=False
+            )
+        elif status_code == 429:
+            return LLMError(
+                error_type=ErrorType.RATE_LIMIT,
+                message=f"速率限制: {error_message}",
+                status_code=status_code,
+                is_recoverable=True,
+                retry_after=60  # 默认等待60秒
+            )
+        elif status_code and 500 <= status_code < 600:
+            return LLMError(
+                error_type=ErrorType.SERVER,
+                message=f"服务器错误: {error_message}",
+                status_code=status_code,
+                is_recoverable=True
+            )
+        elif status_code and 400 <= status_code < 500:
+            return LLMError(
+                error_type=ErrorType.INVALID_REQUEST,
+                message=f"请求错误: {error_message}",
+                status_code=status_code,
+                is_recoverable=False
+            )
+        elif 'timeout' in error_message.lower():
+            return LLMError(
+                error_type=ErrorType.TIMEOUT,
+                message=f"请求超时: {error_message}",
+                is_recoverable=True
+            )
+        elif 'network' in error_message.lower() or 'connection' in error_message.lower():
+            return LLMError(
+                error_type=ErrorType.NETWORK,
+                message=f"网络错误: {error_message}",
+                is_recoverable=True
+            )
+        else:
+            return LLMError(
+                error_type=ErrorType.UNKNOWN,
+                message=f"未知错误: {error_message}",
+                status_code=status_code,
+                is_recoverable=False
+            )
+
     async def generate(self, prompt: str, system_prompt: Optional[str] = None,
                       max_tokens: int = 1024, temperature: float = 0.7,
-                      top_p: float = 0.7) -> str:
+                      top_p: float = 0.7, max_retries: int = None) -> str:
         """
         生成文本
 
@@ -81,9 +198,13 @@ class LLMClient:
             max_tokens: 最大 token 数
             temperature: 温度参数
             top_p: Top-p 采样参数
+            max_retries: 最大重试次数
 
         Returns:
             生成的文本
+
+        Raises:
+            LLMException: 当发生不可恢复的错误时
         """
         messages = []
 
@@ -98,7 +219,9 @@ class LLMClient:
             'content': prompt
         })
 
-        response = await self._call_api(messages, max_tokens, temperature, top_p)
+        response = await self._call_api_with_retry(
+            messages, max_tokens, temperature, top_p, max_retries
+        )
         self.call_count += 1
 
         if response and 'choices' in response:
@@ -109,9 +232,11 @@ class LLMClient:
 
     async def chat(self, messages: List[Dict[str, str]],
                   max_tokens: int = 1024, temperature: float = 0.7,
-                  top_p: float = 0.7) -> str:
+                  top_p: float = 0.7, max_retries: int = None) -> str:
         """对话接口"""
-        response = await self._call_api(messages, max_tokens, temperature, top_p)
+        response = await self._call_api_with_retry(
+            messages, max_tokens, temperature, top_p, max_retries
+        )
         self.call_count += 1
 
         if response and 'choices' in response:
@@ -119,6 +244,51 @@ class LLMClient:
             return response['choices'][0]['message']['content']
 
         return ''
+
+    async def _call_api_with_retry(self, messages: List[Dict[str, str]],
+                                    max_tokens: int, temperature: float,
+                                    top_p: float, max_retries: int = None) -> Optional[Dict[str, Any]]:
+        """带重试的 API 调用"""
+        max_retries = max_retries or self.DEFAULT_MAX_RETRIES
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                result = await self._call_api(messages, max_tokens, temperature, top_p)
+                if result is not None:
+                    return result
+
+                # API 返回 None，可能是临时错误
+                last_error = LLMError(
+                    error_type=ErrorType.UNKNOWN,
+                    message="API 返回空响应",
+                    is_recoverable=True
+                )
+
+            except LLMException as e:
+                last_error = e.error
+                if not e.is_recoverable:
+                    # 不可恢复的错误，直接抛出
+                    raise
+            except Exception as e:
+                last_error = LLMError(
+                    error_type=ErrorType.UNKNOWN,
+                    message=str(e),
+                    is_recoverable=True
+                )
+
+            # 如果不是最后一次尝试，等待后重试
+            if attempt < max_retries - 1 and last_error.is_recoverable:
+                delay = self.DEFAULT_RETRY_DELAY * (self.DEFAULT_RETRY_MULTIPLIER ** attempt)
+                if last_error.retry_after:
+                    delay = max(delay, last_error.retry_after)
+                print(f"LLM 调用失败，{delay:.1f}秒后重试 (尝试 {attempt + 2}/{max_retries}): {last_error}")
+                await asyncio.sleep(delay)
+                self.retry_count += 1
+
+        # 所有重试都失败
+        self.error_count += 1
+        raise LLMException(last_error)
 
     async def _call_api(self, messages: List[Dict[str, str]],
                        max_tokens: int, temperature: float,
@@ -155,13 +325,33 @@ class LLMClient:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f'API Error: {response.status_code} - {response.text}')
+                error_text = response.text
+                error = self._classify_error(response.status_code, error_text)
+                print(f'API Error: {response.status_code} - {error_text}')
                 print(f'Provider: {self.provider}, Model: {self.model}')
                 print(f'URL: {self.api_url}')
+
+                if not error.is_recoverable:
+                    raise LLMException(error)
+
                 return None
 
+        except httpx.TimeoutException:
+            error = self._classify_error(None, "Request timeout")
+            raise LLMException(error)
+
+        except httpx.ConnectError as e:
+            error = self._classify_error(None, f"Connection error: {str(e)}")
+            raise LLMException(error)
+
+        except LLMException:
+            raise
+
         except Exception as e:
+            error = self._classify_error(None, str(e))
             print(f'API Call Error: {str(e)}')
+            if not error.is_recoverable:
+                raise LLMException(error)
             return None
 
     async def close(self):
@@ -175,7 +365,9 @@ class LLMClient:
             'total_tokens': self.total_tokens,
             'model': self.model,
             'provider': self.provider,
-            'api_url': self.api_url
+            'api_url': self.api_url,
+            'error_count': self.error_count,
+            'retry_count': self.retry_count
         }
 
     async def __aenter__(self):

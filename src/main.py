@@ -297,7 +297,8 @@ class SelfCrawlingAgent:
                         'verify',
                         {
                             'extracted_data': extracted_data,
-                            'spec': self.spec
+                            'spec': self.spec,
+                            'extraction_metrics': act_result.get('extraction_metrics', {})
                         }
                     )
 

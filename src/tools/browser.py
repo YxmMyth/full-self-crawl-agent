@@ -3,8 +3,40 @@
 """
 
 from typing import Dict, Any, List, Optional, Tuple
-from playwright.async_api import async_playwright, Browser, Page
+from playwright.async_api import async_playwright, Browser, Page, Error as PlaywrightError
 import asyncio
+import functools
+import random
+
+
+def with_retry(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
+    """
+    重试装饰器，支持指数退避
+
+    Args:
+        max_retries: 最大重试次数
+        base_delay: 基础延迟时间（秒）
+        max_delay: 最大延迟时间（秒）
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(self, *args, **kwargs)
+                except (PlaywrightError, asyncio.TimeoutError, ConnectionError) as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        # 指数退避 + 随机抖动
+                        delay = min(base_delay * (2 ** attempt) + random.uniform(0, 1), max_delay)
+                        print(f"操作失败 (尝试 {attempt + 1}/{max_retries}): {e}, {delay:.1f}秒后重试...")
+                        await asyncio.sleep(delay)
+                    else:
+                        print(f"操作失败，已达最大重试次数 ({max_retries}): {e}")
+            raise last_error
+        return wrapper
+    return decorator
 
 
 class BrowserTool:
@@ -56,6 +88,7 @@ class BrowserTool:
         if self.playwright:
             await self.playwright.stop()
 
+    @with_retry(max_retries=3, base_delay=1.0, max_delay=15.0)
     async def navigate(self, url: str, wait_until: str = 'networkidle',
                       timeout: int = 30000) -> None:
         """
@@ -91,14 +124,16 @@ class BrowserTool:
         else:
             return await self.page.screenshot(full_page=full_page)
 
+    @with_retry(max_retries=2, base_delay=0.5, max_delay=3.0)
     async def wait_for_selector(self, selector: str, timeout: int = 5000) -> bool:
         """等待元素出现"""
         try:
             await self.page.wait_for_selector(selector, timeout=timeout)
             return True
-        except:
+        except PlaywrightError:
             return False
 
+    @with_retry(max_retries=2, base_delay=1.0, max_delay=10.0)
     async def wait_for_navigation(self, timeout: int = 30000) -> None:
         """等待导航完成"""
         await self.page.wait_for_load_state('networkidle', timeout=timeout)
@@ -112,10 +147,12 @@ class BrowserTool:
         """滚动到指定元素"""
         await self.page.locator(selector).scroll_into_view_if_needed()
 
+    @with_retry(max_retries=3, base_delay=0.5, max_delay=5.0)
     async def click(self, selector: str) -> None:
         """点击元素"""
         await self.page.click(selector)
 
+    @with_retry(max_retries=3, base_delay=0.5, max_delay=5.0)
     async def fill(self, selector: str, value: str) -> None:
         """填充表单字段"""
         await self.page.fill(selector, value)
@@ -161,6 +198,37 @@ class BrowserTool:
     async def reload(self) -> None:
         """重新加载页面"""
         await self.page.reload()
+
+    async def is_page_loaded(self) -> bool:
+        """
+        检查页面是否已加载完成
+
+        Returns:
+            页面是否加载完成
+        """
+        try:
+            # 检查 document.readyState
+            ready_state = await self.page.evaluate('document.readyState')
+            return ready_state == 'complete'
+        except Exception:
+            return False
+
+    async def wait_for_page_ready(self, timeout: int = 30000) -> bool:
+        """
+        等待页面就绪
+
+        Args:
+            timeout: 超时时间（毫秒）
+
+        Returns:
+            是否成功就绪
+        """
+        try:
+            await self.page.wait_for_load_state('domcontentloaded', timeout=timeout)
+            await self.page.wait_for_load_state('networkidle', timeout=timeout)
+            return True
+        except PlaywrightError:
+            return False
 
     async def intercept_requests(self, callback: callable) -> None:
         """拦截网络请求"""

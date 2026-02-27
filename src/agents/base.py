@@ -5,8 +5,53 @@ Agent 能力定义
 
 from typing import Dict, Any, List, Optional, Tuple, Callable
 from enum import Enum
+from datetime import datetime
 import json
 import re
+
+
+class DegradationTracker:
+    """
+    降级追踪器
+
+    追踪 LLM 调用降级情况，提供警告和统计
+    """
+
+    def __init__(self, warning_threshold: int = 3):
+        self.degradation_count = 0
+        self.warning_threshold = warning_threshold
+        self.degradation_history: List[Dict[str, Any]] = []
+
+    def record_degradation(self, agent_name: str, operation: str, error: str) -> Dict[str, Any]:
+        """
+        记录降级事件
+
+        Returns:
+            包含 is_degraded 和 should_warn 的字典
+        """
+        self.degradation_count += 1
+        event = {
+            'agent': agent_name,
+            'operation': operation,
+            'error': error,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.degradation_history.append(event)
+
+        return {
+            'is_degraded': True,
+            'should_warn': self.degradation_count >= self.warning_threshold,
+            'degradation_count': self.degradation_count,
+            'message': f"LLM {operation} 降级 (总计: {self.degradation_count}次)"
+        }
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取降级统计"""
+        return {
+            'total_degradations': self.degradation_count,
+            'warning_threshold': self.warning_threshold,
+            'history': self.degradation_history[-10:]  # 最近10条
+        }
 
 
 class AgentCapability(str, Enum):
@@ -53,13 +98,25 @@ class AgentInterface:
 class SenseAgent(AgentInterface):
     """感知智能体 - 分析页面结构"""
 
-    def __init__(self):
+    def __init__(self, degradation_tracker: Optional[DegradationTracker] = None):
         super().__init__("SenseAgent", AgentCapability.SENSE)
+        self.degradation_tracker = degradation_tracker or DegradationTracker()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         browser = context.get('browser')
         spec = context.get('spec')
         llm_client = context.get('llm_client')
+        degradation_info = None
+
+        # 检查浏览器是否可用
+        if not browser:
+            return {
+                'success': False,
+                'error': 'Browser not available',
+                'structure': {},
+                'features': {},
+                'anti_bot_detected': False
+            }
 
         # 1. 获取页面内容
         html = await browser.get_html()
@@ -80,12 +137,19 @@ class SenseAgent(AgentInterface):
                 deep_analysis = await self._llm_analyze(html, spec, llm_client)
                 features.update(deep_analysis)
             except Exception as e:
-                print(f"LLM 分析失败: {e}")
+                error_msg = str(e)
+                print(f"LLM 分析失败: {error_msg}")
+                # 记录降级
+                degradation_info = self.degradation_tracker.record_degradation(
+                    self.name, 'llm_analyze', error_msg
+                )
+                if degradation_info.get('should_warn'):
+                    print(f"警告: {degradation_info['message']}")
 
         # 5. 检测反爬
         anti_bot = self._detect_anti_bot(html)
 
-        return {
+        result = {
             'success': True,
             'structure': features,
             'features': features,
@@ -93,6 +157,12 @@ class SenseAgent(AgentInterface):
             'html_snapshot': html[:50000],  # 限制大小
             'screenshot': screenshot
         }
+
+        # 添加降级信息
+        if degradation_info:
+            result['degradation'] = degradation_info
+
+        return result
 
     def _analyze_structure(self, html: str) -> Dict[str, Any]:
         """分析页面结构"""
@@ -198,7 +268,7 @@ HTML 片段：
         return "感知页面结构和特征，识别页面类型和反爬机制"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        return 'browser' in context
+        return 'browser' in context and context.get('browser') is not None
 
 
 # ==================== 规划智能体 ====================
@@ -206,34 +276,49 @@ HTML 片段：
 class PlanAgent(AgentInterface):
     """规划智能体 - 生成提取策略"""
 
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, degradation_tracker: Optional[DegradationTracker] = None):
         super().__init__("PlanAgent", AgentCapability.PLAN)
         self.llm_client = llm_client
+        self.degradation_tracker = degradation_tracker or DegradationTracker()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         page_structure = context.get('page_structure', {})
         spec = context.get('spec')
         llm_client = context.get('llm_client') or self.llm_client
+        degradation_info = None
 
         # 1. 使用 LLM 生成策略（如有）
         if llm_client:
             try:
                 strategy = await self._generate_with_llm(page_structure, spec, llm_client)
             except Exception as e:
-                print(f"LLM 策略生成失败: {e}")
+                error_msg = str(e)
+                print(f"LLM 策略生成失败: {error_msg}")
                 strategy = self._fallback_strategy(page_structure, spec)
+                # 记录降级
+                degradation_info = self.degradation_tracker.record_degradation(
+                    self.name, 'generate_strategy', error_msg
+                )
+                if degradation_info.get('should_warn'):
+                    print(f"警告: {degradation_info['message']}")
         else:
             strategy = self._fallback_strategy(page_structure, spec)
 
         # 2. 生成提取代码
         code = self._generate_code(strategy, spec)
 
-        return {
+        result = {
             'success': True,
             'strategy': strategy,
             'selectors': strategy.get('selectors', {}),
             'generated_code': code
         }
+
+        # 添加降级信息
+        if degradation_info:
+            result['degradation'] = degradation_info
+
+        return result
 
     async def _generate_with_llm(self, structure: Dict, spec: Any, llm_client) -> Dict:
         """使用 LLM 生成策略"""
@@ -295,7 +380,7 @@ class PlanAgent(AgentInterface):
     def _generate_code(self, strategy: Dict, spec: Any) -> str:
         """生成可执行的 Python 代码"""
         selectors = strategy.get('selectors', {})
-        container_selector = strategy.get('container_selector', '.item')
+        container_selector = strategy.get('container_selector', '.item') or '.item'
 
         code = '''from bs4 import BeautifulSoup
 import json
@@ -340,6 +425,58 @@ if __name__ == "__main__":
 
 # ==================== 执行智能体 ====================
 
+class ExtractionMetrics:
+    """提取质量指标"""
+
+    def __init__(self):
+        self.total_items = 0
+        self.successful_items = 0
+        self.failed_selectors: Dict[str, int] = {}  # 选择器 -> 失败次数
+        self.missing_fields: Dict[str, int] = {}  # 字段名 -> 缺失次数
+        self.empty_fields: Dict[str, int] = {}  # 字段名 -> 空值次数
+        self.required_missing: Dict[str, int] = {}  # 必填字段缺失次数
+
+    def record_selector_result(self, field_name: str, selector: str,
+                                found: bool, has_value: bool, required: bool = False):
+        """记录选择器匹配结果"""
+        if not found:
+            self.failed_selectors[selector] = self.failed_selectors.get(selector, 0) + 1
+            self.missing_fields[field_name] = self.missing_fields.get(field_name, 0) + 1
+            if required:
+                self.required_missing[field_name] = self.required_missing.get(field_name, 0) + 1
+        elif not has_value:
+            self.empty_fields[field_name] = self.empty_fields.get(field_name, 0) + 1
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """获取指标"""
+        return {
+            'total_items': self.total_items,
+            'successful_items': self.successful_items,
+            'success_rate': self.successful_items / self.total_items if self.total_items > 0 else 0,
+            'failed_selectors': self.failed_selectors,
+            'missing_fields': self.missing_fields,
+            'empty_fields': self.empty_fields,
+            'required_missing': self.required_missing,
+            'quality_score': self._calculate_quality()
+        }
+
+    def _calculate_quality(self) -> float:
+        """计算质量分数"""
+        if self.total_items == 0:
+            return 0.0
+
+        # 基础分数：成功提取的项目比例
+        base_score = self.successful_items / self.total_items
+
+        # 惩罚必填字段缺失
+        required_penalty = 0
+        if self.required_missing:
+            total_required_missing = sum(self.required_missing.values())
+            required_penalty = min(total_required_missing / (self.total_items + 1), 0.5)
+
+        return max(0, base_score - required_penalty)
+
+
 class ActAgent(AgentInterface):
     """执行智能体 - 执行提取操作"""
 
@@ -351,9 +488,21 @@ class ActAgent(AgentInterface):
         selectors = context.get('selectors', {})
         strategy = context.get('strategy', {})
         generated_code = context.get('generated_code')
+        spec = context.get('spec')
+
+        # 提取必填字段
+        required_fields = set()
+        if spec and 'targets' in spec:
+            for target in spec['targets']:
+                for field in target.get('fields', []):
+                    if field.get('required', False):
+                        required_fields.add(field.get('name'))
 
         # 1. 获取 HTML
         html = await browser.get_html()
+
+        # 初始化指标追踪
+        metrics = ExtractionMetrics()
 
         # 2. 执行提取
         if generated_code and strategy.get('strategy_type') == 'css':
@@ -361,51 +510,88 @@ class ActAgent(AgentInterface):
             extracted_data = await self._execute_code(generated_code, html)
         else:
             # 使用选择器直接提取
-            extracted_data = await self._extract_with_selectors(browser, selectors, strategy)
+            extracted_data = await self._extract_with_selectors(
+                browser, selectors, strategy, metrics, required_fields
+            )
 
         # 3. 处理分页
         pagination_type = strategy.get('pagination_strategy', 'none')
         if pagination_type != 'none' and len(extracted_data) > 0:
             all_data = await self._handle_pagination(
-                browser, extracted_data, strategy, selectors
+                browser, extracted_data, strategy, selectors, metrics, required_fields
             )
             extracted_data = all_data
+
+        # 获取指标
+        metrics.total_items = len(extracted_data)
+        metrics.successful_items = sum(1 for item in extracted_data if any(item.values()))
 
         return {
             'success': True,
             'extracted_data': extracted_data,
-            'count': len(extracted_data)
+            'count': len(extracted_data),
+            'extraction_metrics': metrics.get_metrics()
         }
 
-    async def _extract_with_selectors(self, browser, selectors: Dict, strategy: Dict) -> List[Dict]:
+    async def _extract_with_selectors(self, browser, selectors: Dict, strategy: Dict,
+                                       metrics: Optional[ExtractionMetrics] = None,
+                                       required_fields: Optional[set] = None) -> List[Dict]:
         """使用选择器提取数据"""
         from bs4 import BeautifulSoup
         html = await browser.get_html()
         soup = BeautifulSoup(html, 'html.parser')
 
         # 找到所有数据项容器
-        container_selector = strategy.get('container_selector', 'body')
+        container_selector = strategy.get('container_selector') or '.item'
         containers = soup.select(container_selector)
 
         results = []
+        required_fields = required_fields or set()
+
         for container in containers:
             item = {}
+            item_has_data = False
+
             for field_name, field_selector in selectors.items():
                 if field_name.startswith('_'):
                     continue
                 try:
                     elem = container.select_one(field_selector)
-                    item[field_name] = elem.get_text(strip=True) if elem else ''
+
+                    if metrics:
+                        # 记录选择器匹配结果
+                        found = elem is not None
+                        has_value = found and bool(elem.get_text(strip=True))
+                        is_required = field_name in required_fields
+                        metrics.record_selector_result(field_name, field_selector,
+                                                       found, has_value, is_required)
+
+                    if elem:
+                        text = elem.get_text(strip=True)
+                        item[field_name] = text
+                        if text:
+                            item_has_data = True
+                    else:
+                        # 区分"元素不存在"和"元素为空"
+                        item[field_name] = None  # None 表示元素不存在
                 except Exception as e:
-                    item[field_name] = ''
-            if any(item.values()):  # 只保留有内容的项
+                    item[field_name] = None
+                    if metrics:
+                        metrics.failed_selectors[field_selector] = \
+                            metrics.failed_selectors.get(field_selector, 0) + 1
+
+            if item_has_data:  # 只保留有内容的项
+                # 将 None 转换为空字符串以便兼容
+                for key in item:
+                    if item[key] is None:
+                        item[key] = ''
                 results.append(item)
 
         return results
 
     async def _execute_code(self, code: str, html: str) -> List[Dict]:
-        """在沙箱中执行生成的代码"""
-        import subprocess
+        """在沙箱中执行生成的代码（异步版本）"""
+        import asyncio
         import json
         import tempfile
         import os
@@ -416,33 +602,59 @@ class ActAgent(AgentInterface):
             script_path = f.name
 
         try:
-            result = subprocess.run(
-                ['python', script_path],
-                input=html,
-                capture_output=True,
-                text=True,
+            # 使用异步子进程执行
+            proc = await asyncio.create_subprocess_exec(
+                'python', script_path,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(html.encode()),
                 timeout=60
             )
-            if result.returncode == 0 and result.stdout.strip():
-                return json.loads(result.stdout)
+
+            if proc.returncode == 0 and stdout:
+                try:
+                    return json.loads(stdout.decode())
+                except json.JSONDecodeError as e:
+                    print(f"JSON 解析失败: {e}")
+                    return []
             else:
-                print(f"代码执行失败: {result.stderr}")
+                print(f"代码执行失败: {stderr.decode()}")
                 return []
+        except asyncio.TimeoutError:
+            print(f"代码执行超时 (60秒)")
+            return []
         except Exception as e:
             print(f"代码执行异常: {e}")
             return []
         finally:
             os.unlink(script_path)
 
-    async def _handle_pagination(self, browser, initial_data, strategy, selectors):
-        """处理分页"""
+    async def _handle_pagination(self, browser, initial_data, strategy, selectors,
+                                  metrics: Optional[ExtractionMetrics] = None,
+                                  required_fields: Optional[set] = None):
+        """处理分页（改进版：支持去重和滚动检测）"""
         all_data = initial_data.copy()
         max_pages = strategy.get('max_pages', 5)
         pagination_type = strategy.get('pagination_strategy', 'click')
         next_selector = strategy.get('pagination_selector', 'a.next')
 
+        # 用于去重 - 使用关键字段组合
+        def get_item_key(item: Dict) -> str:
+            """生成唯一键用于去重"""
+            # 使用所有非空值组合作为键
+            key_parts = [f"{k}:{v}" for k, v in sorted(item.items()) if v]
+            return "|".join(key_parts) if key_parts else str(id(item))
+
+        seen_keys = {get_item_key(item) for item in all_data}
+        required_fields = required_fields or set()
+
         for page_num in range(max_pages - 1):
             try:
+                prev_data_count = len(all_data)
+
                 if pagination_type == 'click':
                     next_btn = await browser.page.query_selector(next_selector)
                     if next_btn:
@@ -452,24 +664,44 @@ class ActAgent(AgentInterface):
                     else:
                         break
                 elif pagination_type == 'scroll':
+                    # 滚动前记录位置
+                    prev_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
+
                     await browser.scroll_to_bottom()
                     await browser.page.wait_for_timeout(1000)
+
+                    # 检测是否到底（滚动后高度没变化）
+                    new_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
+                    if new_scroll_height == prev_scroll_height:
+                        print("已到达页面底部")
+                        break
+
                 elif pagination_type == 'url':
-                    # URL 分页需要特殊处理
-                    pass
+                    # URL 分页逻辑
+                    current_url = await browser.get_current_url()
+                    next_url = self._get_next_page_url(current_url, page_num + 2)
+                    if next_url:
+                        await browser.navigate(next_url)
+                    else:
+                        break
 
                 # 提取新数据
                 html = await browser.get_html()
                 new_data = await self._extract_with_selectors(
-                    browser, selectors, strategy
+                    browser, selectors, strategy, metrics, required_fields
                 )
 
-                # 去重
-                existing_keys = set(str(item) for item in all_data)
+                # 去重添加
                 for item in new_data:
-                    if str(item) not in existing_keys:
+                    item_key = get_item_key(item)
+                    if item_key not in seen_keys:
                         all_data.append(item)
-                        existing_keys.add(str(item))
+                        seen_keys.add(item_key)
+
+                # 如果没有新数据，可能已到底
+                if len(all_data) == prev_data_count:
+                    print(f"分页第 {page_num + 2} 页无新数据，停止翻页")
+                    break
 
             except Exception as e:
                 print(f"分页处理失败 (第 {page_num + 2} 页): {e}")
@@ -477,12 +709,51 @@ class ActAgent(AgentInterface):
 
         return all_data
 
+    def _get_next_page_url(self, current_url: str, next_page: int) -> Optional[str]:
+        """
+        生成下一页 URL
+
+        支持:
+        - ?page=N 格式
+        - /page/N 格式
+        - /N 格式
+        """
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        parsed = urlparse(current_url)
+
+        # 尝试 ?page=N 格式
+        query_params = parse_qs(parsed.query)
+        if 'page' in query_params:
+            query_params['page'] = [str(next_page)]
+            new_query = urlencode(query_params, doseq=True)
+            return urlunparse(parsed._replace(query=new_query))
+
+        # 尝试 /page/N 或 /N 格式
+        path_parts = parsed.path.rstrip('/').split('/')
+        if path_parts and path_parts[-1].isdigit():
+            # 替换最后的数字
+            path_parts[-1] = str(next_page)
+            new_path = '/'.join(path_parts)
+            return urlunparse(parsed._replace(path=new_path))
+
+        # 尝试添加 /page/N
+        if 'page' in parsed.path.lower():
+            # 已有 page，替换数字
+            import re
+            new_path = re.sub(r'/page/\d+', f'/page/{next_page}', parsed.path)
+            return urlunparse(parsed._replace(path=new_path))
+
+        return None
+
     def get_description(self) -> str:
         return "执行实际的数据提取操作"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
         # 需要browser和至少一个提取参数
-        return 'browser' in context and ('selectors' in context or 'strategy' in context or 'generated_code' in context)
+        browser_ok = 'browser' in context and context.get('browser') is not None
+        has_params = 'selectors' in context or 'strategy' in context or 'generated_code' in context
+        return browser_ok and has_params
 
 
 # ==================== 验证智能体 ====================
@@ -497,6 +768,7 @@ class VerifyAgent(AgentInterface):
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         extracted_data = context.get('extracted_data', [])
         spec = context.get('spec')
+        extraction_metrics = context.get('extraction_metrics', {})
 
         # 使用外部验证器或内置验证逻辑
         if self.verifier:
@@ -510,7 +782,9 @@ class VerifyAgent(AgentInterface):
         else:
             # 内置验证逻辑
             quality_score = self._calculate_quality(extracted_data, spec)
-            verification_result = self._build_verification_result(extracted_data, spec, quality_score)
+            verification_result = self._build_verification_result(
+                extracted_data, spec, quality_score, extraction_metrics
+            )
 
         return {
             'success': True,
@@ -555,7 +829,8 @@ class VerifyAgent(AgentInterface):
         total = result.get('total_items', 1)
         return valid / total if total > 0 else 0.0
 
-    def _build_verification_result(self, data: List, spec: Any, quality_score: float) -> Dict:
+    def _build_verification_result(self, data: List, spec: Any, quality_score: float,
+                                    extraction_metrics: Optional[Dict] = None) -> Dict:
         """构建验证结果"""
         issues = []
 
@@ -576,7 +851,17 @@ class VerifyAgent(AgentInterface):
         if missing_count > len(data) * 0.5:
             issues.append(f"超过50%的数据缺少必填字段")
 
-        return {
+        # 添加提取指标相关的问题
+        if extraction_metrics:
+            failed_selectors = extraction_metrics.get('failed_selectors', {})
+            if failed_selectors:
+                issues.append(f"部分选择器匹配失败: {list(failed_selectors.keys())[:3]}")
+
+            required_missing = extraction_metrics.get('required_missing', {})
+            if required_missing:
+                issues.append(f"必填字段缺失: {dict(list(required_missing.items())[:3])}")
+
+        result = {
             'status': 'passed' if quality_score >= 0.8 else 'partial' if quality_score >= 0.5 else 'failed',
             'total_items': len(data),
             'valid_items': int(len(data) * quality_score),
@@ -587,6 +872,12 @@ class VerifyAgent(AgentInterface):
                 'consistency': self._check_consistency(data)
             }
         }
+
+        # 包含提取指标
+        if extraction_metrics:
+            result['extraction_metrics'] = extraction_metrics
+
+        return result
 
     def _check_consistency(self, data: List) -> float:
         """检查数据一致性"""
@@ -613,9 +904,10 @@ class VerifyAgent(AgentInterface):
 class JudgeAgent(AgentInterface):
     """决策智能体 - 做出关键决策"""
 
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, degradation_tracker: Optional[DegradationTracker] = None):
         super().__init__("JudgeAgent", AgentCapability.JUDGE)
         self.llm_client = llm_client
+        self.degradation_tracker = degradation_tracker or DegradationTracker()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         quality_score = context.get('quality_score', 0)
@@ -624,6 +916,7 @@ class JudgeAgent(AgentInterface):
         errors = context.get('errors', [])
         spec = context.get('spec')
         extracted_data_count = len(context.get('extracted_data', []))
+        degradation_info = None
 
         # 1. 程序快速判断
         decision, reasoning = self._quick_decision(
@@ -639,15 +932,28 @@ class JudgeAgent(AgentInterface):
                     decision = enhanced_decision.get('decision', decision)
                     reasoning = enhanced_decision.get('reasoning', reasoning)
             except Exception as e:
-                print(f"LLM 决策失败: {e}")
+                error_msg = str(e)
+                print(f"LLM 决策失败: {error_msg}")
+                # 记录降级
+                degradation_info = self.degradation_tracker.record_degradation(
+                    self.name, 'llm_judge', error_msg
+                )
+                if degradation_info.get('should_warn'):
+                    print(f"警告: {degradation_info['message']}")
 
-        return {
+        result = {
             'success': True,
             'decision': decision,
             'reasoning': reasoning,
             'confidence': quality_score,
             'suggestions': self._get_suggestions(decision, context)
         }
+
+        # 添加降级信息
+        if degradation_info:
+            result['degradation'] = degradation_info
+
+        return result
 
     def _quick_decision(self, quality_score: float, iteration: int, max_iterations: int,
                         errors: List, data_count: int) -> Tuple[str, str]:
@@ -829,9 +1135,10 @@ class ExploreAgent(AgentInterface):
 class ReflectAgent(AgentInterface):
     """反思智能体 - 反思和优化策略"""
 
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, degradation_tracker: Optional[DegradationTracker] = None):
         super().__init__("ReflectAgent", AgentCapability.REFLECT)
         self.llm_client = llm_client
+        self.degradation_tracker = degradation_tracker or DegradationTracker()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         execution_history = context.get('execution_history', [])
@@ -839,6 +1146,7 @@ class ReflectAgent(AgentInterface):
         quality_score = context.get('quality_score', 0)
         spec = context.get('spec')
         llm_client = context.get('llm_client') or self.llm_client
+        degradation_info = None
 
         # 1. 分析错误模式
         error_analysis = self._analyze_errors(errors)
@@ -853,12 +1161,19 @@ class ReflectAgent(AgentInterface):
                     error_analysis, history_analysis, spec, llm_client
                 )
             except Exception as e:
-                print(f"LLM 反思失败: {e}")
+                error_msg = str(e)
+                print(f"LLM 反思失败: {error_msg}")
                 improvements = self._fallback_improvements(error_analysis)
+                # 记录降级
+                degradation_info = self.degradation_tracker.record_degradation(
+                    self.name, 'llm_reflect', error_msg
+                )
+                if degradation_info.get('should_warn'):
+                    print(f"警告: {degradation_info['message']}")
         else:
             improvements = self._fallback_improvements(error_analysis)
 
-        return {
+        result = {
             'success': True,
             'analysis': {
                 'error_patterns': error_analysis,
@@ -869,6 +1184,12 @@ class ReflectAgent(AgentInterface):
             'new_selectors': improvements.get('selectors', {}),
             'new_strategy': improvements.get('strategy', None)
         }
+
+        # 添加降级信息
+        if degradation_info:
+            result['degradation'] = degradation_info
+
+        return result
 
     def _analyze_errors(self, errors: List[str]) -> Dict[str, Any]:
         """分析错误模式"""
@@ -1004,14 +1325,17 @@ class AgentPool:
 
     def __init__(self, llm_client=None):
         self.llm_client = llm_client
+        # 共享的降级追踪器
+        self.degradation_tracker = DegradationTracker()
+
         self.agents = {
-            AgentCapability.SENSE: SenseAgent(),
-            AgentCapability.PLAN: PlanAgent(llm_client),
+            AgentCapability.SENSE: SenseAgent(self.degradation_tracker),
+            AgentCapability.PLAN: PlanAgent(llm_client, self.degradation_tracker),
             AgentCapability.ACT: ActAgent(),
             AgentCapability.VERIFY: VerifyAgent(),
-            AgentCapability.JUDGE: JudgeAgent(llm_client),
+            AgentCapability.JUDGE: JudgeAgent(llm_client, self.degradation_tracker),
             AgentCapability.EXPLORE: ExploreAgent(),
-            AgentCapability.REFLECT: ReflectAgent(llm_client)
+            AgentCapability.REFLECT: ReflectAgent(llm_client, self.degradation_tracker)
         }
 
     def get_agent(self, capability: AgentCapability) -> Optional[AgentInterface]:
@@ -1042,3 +1366,7 @@ class AgentPool:
     def set_verifier(self, verifier):
         """设置验证器"""
         self.agents[AgentCapability.VERIFY] = VerifyAgent(verifier)
+
+    def get_degradation_stats(self) -> Dict[str, Any]:
+        """获取降级统计"""
+        return self.degradation_tracker.get_stats()
