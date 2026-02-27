@@ -1,0 +1,84 @@
+# Site 10: UK Government Tenders
+# 政府/企业公告站（PDF+HTML表格）
+
+task_id: "site_10_gov_tender"
+task_name: "UK Government Tender Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "tenders"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: ".tender-title"
+        required: true
+        description: "Tender title"
+      - name: "organization"
+        type: "text"
+        selector: ".organization"
+        required: false
+        description: "Issuing organization"
+      - name: "description"
+        type: "text"
+        selector: ".tender-description"
+        required: false
+        description: "Tender description"
+      - name: "published_date"
+        type: "text"
+        selector: ".published-date"
+        required: false
+        description: "Publication date"
+      - name: "deadline"
+        type: "text"
+        selector: ".deadline"
+        required: false
+        description: "Submission deadline"
+      - name: "value"
+        type: "text"
+        selector: ".tender-value"
+        required: false
+        description: "Contract value"
+      - name: "pdf_url"
+        type: "url"
+        selector: "a[href$='.pdf']"
+        attribute: "href"
+        required: false
+        description: "PDF document URL"
+      - name: "details_table"
+        type: "html"
+        selector: "table"
+        required: false
+        description: "Tender details HTML table"
+
+start_url: "https://www.find-tender.service.gov.uk/"
+
+# Limits
+max_pages: 1
+max_iterations: 3
+depth_limit: 1
+
+# Wait for dynamic content
+wait_strategy:
+  wait_for: ".tender-list"
+  timeout: 15000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 1
+    max: 3
+
+# Completion criteria
+completion_criteria:
+  min_items: 5
+  quality_threshold: 0.7
+  max_error_rate: 0.2
+
+notes: |
+  - Government tender announcements
+  - PDF documents attached to listings
+  - HTML tables with award amounts
+  - Generally no anti-bot restrictions

@@ -1,0 +1,73 @@
+# Site 5: arXiv Academic Papers
+# 学术论文站点（PDF下载/摘要）
+
+task_id: "site_05_arxiv"
+task_name: "arXiv CS Papers Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "papers"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: ".list-title"
+        required: true
+        description: "Paper title"
+      - name: "authors"
+        type: "text"
+        selector: ".list-authors"
+        required: true
+        description: "Paper authors"
+      - name: "abstract"
+        type: "text"
+        selector: ".list-subjects + p"
+        required: false
+        description: "Paper abstract"
+      - name: "pdf_url"
+        type: "url"
+        selector: "a[href*='.pdf']"
+        attribute: "href"
+        required: true
+        description: "PDF download URL"
+      - name: "arxiv_id"
+        type: "text"
+        selector: ".list-Identifier"
+        required: true
+        description: "arXiv paper ID"
+      - name: "subjects"
+        type: "text"
+        selector: ".list-subjects"
+        required: false
+        description: "Paper subjects/categories"
+
+start_url: "https://arxiv.org/list/cs/recent"
+
+# Limits
+max_pages: 1
+max_iterations: 3
+depth_limit: 1
+
+# Wait for dynamic content
+wait_strategy:
+  wait_for: ".list-title"
+  timeout: 10000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 1
+    max: 2
+
+# Completion criteria
+completion_criteria:
+  min_items: 10
+  quality_threshold: 0.8
+  max_error_rate: 0.1
+
+notes: |
+  - Classic academic paper site
+  - Each paper has direct PDF link and abstract
+  - Static HTML, easier to parse

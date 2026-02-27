@@ -248,6 +248,38 @@ class EvidenceCollector:
 
         return report
 
+    def collect_plan(self, generated_code: str, strategy: str) -> str:
+        """收集规划阶段的证据"""
+        evidence = Evidence(
+            type=EvidenceType.EXTRACTED_DATA,
+            data={
+                'generated_code': generated_code,
+                'strategy': strategy
+            },
+            timestamp=datetime.now(),
+            source='planning',
+            metadata={'phase': 'planning'}
+        )
+        return self._add_evidence(evidence)
+
+    def save_index(self) -> None:
+        """保存证据索引"""
+        if not self.storage_dir:
+            return
+
+        import os
+        os.makedirs(self.storage_dir, exist_ok=True)
+
+        index_data = {
+            'total_evidences': len(self.evidences),
+            'by_type': self.evidence_index,
+            'evidences': [e.to_dict() for e in self.evidences]
+        }
+
+        filepath = os.path.join(self.storage_dir, 'index.json')
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(index_data, f, indent=2, ensure_ascii=False)
+
 
 # ==================== 结果验证器 ====================
 

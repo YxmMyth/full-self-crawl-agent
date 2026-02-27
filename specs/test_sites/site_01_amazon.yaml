@@ -1,0 +1,77 @@
+# Site 1: Amazon Smartphone Products
+# 电商手机产品页（名称/价格/规格/主图URL/PDF）
+
+task_id: "site_01_amazon"
+task_name: "Amazon Smartphone Products Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "pagination"
+
+targets:
+  - name: "products"
+    fields:
+      - name: "name"
+        type: "text"
+        selector: "h2 a span"
+        required: true
+        description: "Product name"
+      - name: "price"
+        type: "text"
+        selector: ".a-price .a-offscreen"
+        required: true
+        description: "Product price"
+      - name: "rating"
+        type: "text"
+        selector: ".a-rating"
+        required: false
+        description: "Product rating"
+      - name: "image_url"
+        type: "url"
+        selector: ".s-image"
+        attribute: "src"
+        required: true
+        description: "Main product image URL"
+      - name: "product_url"
+        type: "url"
+        selector: "h2 a"
+        attribute: "href"
+        required: true
+        description: "Product detail page URL"
+      - name: "brand"
+        type: "text"
+        selector: ".a-color-secondary span"
+        required: false
+        description: "Brand name"
+
+start_url: "https://www.amazon.com/s?k=smartphone"
+
+# Limits
+max_pages: 3
+max_iterations: 5
+depth_limit: 1
+
+# Wait for dynamic content
+wait_strategy:
+  wait_for: ".s-result-item"
+  timeout: 10000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 2
+    max: 5
+  user_agent_rotation: true
+  stealth_mode: true
+
+# Completion criteria
+completion_criteria:
+  min_items: 10
+  quality_threshold: 0.7
+  max_error_rate: 0.2
+
+# Notes
+notes: |
+  - Amazon has strict anti-bot measures
+  - May need to handle CAPTCHA
+  - Price and rating may be in different locations

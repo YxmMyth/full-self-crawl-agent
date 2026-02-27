@@ -5,9 +5,12 @@
 
 import json
 import yaml
+import logging
 from pathlib import Path
 from typing import Dict, Any, Union
-from .contracts import SpecContract, StateContract
+from .contracts import SpecContract, StateContract, ContractValidator
+
+logger = logging.getLogger(__name__)
 
 
 class SpecLoader:
@@ -27,13 +30,15 @@ class SpecLoader:
 
     def __init__(self, spec_dir: Union[str, Path]):
         self.spec_dir = Path(spec_dir)
+        self.validator = ContractValidator()
 
-    def load_spec(self, spec_path: Union[str, Path]) -> SpecContract:
+    def load_spec(self, spec_path: Union[str, Path], validate: bool = True) -> SpecContract:
         """
         加载 Spec 契约
 
         Args:
             spec_path: 契约文件路径
+            validate: 是否验证契约
 
         Returns:
             冻结的 SpecContract 对象
@@ -47,11 +52,16 @@ class SpecLoader:
         # 加载契约内容
         spec_data = self._load_file(path)
 
-        # 验证契约
-        self._validate_spec(spec_data)
+        # 验证契约（使用两种验证方式）
+        if validate:
+            self._validate_spec(spec_data)
+            # 同时使用 contracts.py 中的验证器
+            try:
+                self.validator.validate_spec(spec_data)
+            except ValueError as e:
+                logger.warning(f"ContractValidator 警告: {e}")
 
-        # 返回字典形式的契约数据
-        # 在当前实现中，我们返回字典，因为 SpecContract 是 TypedDict 类型提示
+        logger.info(f"成功加载 Spec: {spec_data.get('task_name', spec_data.get('task_id', 'unknown'))}")
         return spec_data
 
     def load_state(self, task_id: str) -> StateContract:

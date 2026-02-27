@@ -224,7 +224,7 @@ class SenseAgent(AgentInterface):
         return structure
 
     async def _llm_analyze(self, html: str, spec: Any, llm_client) -> Dict:
-        """使用 LLM 增强分析"""
+        """使用 LLM 增强分析 - 推理任务，使用 DeepSeek"""
         goal = spec.get('goal', '未知') if spec else '未知'
 
         prompt = f"""分析以下 HTML 页面，提取关键信息：
@@ -246,7 +246,14 @@ HTML 片段：
     "special_handling": ["login", "captcha", "spa"]
 }}"""
         try:
-            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            # 推理任务 - 使用 reason() 方法
+            if hasattr(llm_client, 'reason'):
+                response = await llm_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    task_type='reasoning'
+                )
+            else:
+                response = await llm_client.chat([{"role": "user", "content": prompt}])
             # 解析 JSON
             if '```json' in response:
                 json_str = response.split('```json')[1].split('```')[0]
@@ -305,7 +312,18 @@ class PlanAgent(AgentInterface):
             strategy = self._fallback_strategy(page_structure, spec)
 
         # 2. 生成提取代码
-        code = self._generate_code(strategy, spec)
+        # 如果 LLM 已返回代码，直接使用；否则生成或使用 LLM 编码
+        code = strategy.get('extraction_code')
+        if not code:
+            # 尝试使用 LLM 生成代码（编码任务，使用 GLM）
+            if llm_client and hasattr(llm_client, 'code'):
+                try:
+                    code = await self._generate_code_with_llm(strategy, spec, llm_client)
+                except Exception as e:
+                    print(f"LLM 代码生成失败: {e}")
+                    code = self._generate_code(strategy, spec)
+            else:
+                code = self._generate_code(strategy, spec)
 
         result = {
             'success': True,
@@ -321,7 +339,7 @@ class PlanAgent(AgentInterface):
         return result
 
     async def _generate_with_llm(self, structure: Dict, spec: Any, llm_client) -> Dict:
-        """使用 LLM 生成策略"""
+        """使用 LLM 生成策略 - 推理任务，使用 DeepSeek"""
         targets = spec.get('targets', []) if spec else []
 
         prompt = f"""基于页面结构分析，生成数据提取策略。
@@ -342,7 +360,14 @@ class PlanAgent(AgentInterface):
     "pagination_selector": "下一页按钮选择器",
     "estimated_items": 100
 }}"""
-        response = await llm_client.chat([{"role": "user", "content": prompt}])
+        # 推理任务 - 使用 reason() 方法
+        if hasattr(llm_client, 'reason'):
+            response = await llm_client.chat(
+                [{"role": "user", "content": prompt}],
+                task_type='reasoning'
+            )
+        else:
+            response = await llm_client.chat([{"role": "user", "content": prompt}])
         # 解析并返回
         try:
             if '```json' in response:
@@ -376,6 +401,54 @@ class PlanAgent(AgentInterface):
             'pagination_selector': structure.get('pagination_selector'),
             'estimated_items': structure.get('estimated_items', 10)
         }
+
+    async def _generate_code_with_llm(self, strategy: Dict, spec: Any, llm_client) -> str:
+        """使用 LLM 生成代码 - 编码任务，使用 GLM"""
+        targets = spec.get('targets', []) if spec else []
+        container_selector = strategy.get('container_selector', '.item')
+        selectors = strategy.get('selectors', {})
+
+        prompt = f"""生成 Python 数据提取代码。
+
+目标字段：
+{json.dumps(targets, ensure_ascii=False, indent=2)}
+
+选择器配置：
+- 容器选择器: {container_selector}
+- 字段选择器: {json.dumps(selectors, ensure_ascii=False, indent=2)}
+
+请生成完整的 Python 代码，使用 BeautifulSoup 进行数据提取。
+
+代码要求：
+1. 函数名 extract_data(html_content)
+2. 返回列表，每个元素是字典
+3. 使用 json.dumps 输出 JSON
+4. 处理空值情况
+
+只输出代码，不要解释。"""
+
+        try:
+            # 编码任务 - 使用 code() 方法
+            if hasattr(llm_client, 'code'):
+                response = await llm_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    task_type='coding'
+                )
+            else:
+                response = await llm_client.chat([{"role": "user", "content": prompt}])
+
+            # 提取代码块
+            if '```python' in response:
+                code = response.split('```python')[1].split('```')[0]
+            elif '```' in response:
+                code = response.split('```')[1].split('```')[0]
+            else:
+                code = response
+
+            return code.strip()
+        except Exception as e:
+            print(f"LLM 代码生成失败: {e}")
+            return self._generate_code(strategy, spec)
 
     def _generate_code(self, strategy: Dict, spec: Any) -> str:
         """生成可执行的 Python 代码"""
@@ -976,7 +1049,7 @@ class JudgeAgent(AgentInterface):
         return 'terminate', f"质量分数过低 {quality_score:.2f}"
 
     async def _llm_judge(self, context: Dict, llm_client) -> Optional[Dict]:
-        """使用 LLM 增强决策"""
+        """使用 LLM 增强决策 - 推理任务，使用 DeepSeek"""
         prompt = f"""分析爬取任务的执行情况，决定下一步行动：
 
 质量分数：{context.get('quality_score', 0)}
@@ -994,7 +1067,14 @@ class JudgeAgent(AgentInterface):
 {{"decision": "complete|reflect_and_retry|terminate", "reasoning": "原因"}}"""
 
         try:
-            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            # 推理任务 - 使用 reason() 方法
+            if hasattr(llm_client, 'reason'):
+                response = await llm_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    task_type='reasoning'
+                )
+            else:
+                response = await llm_client.chat([{"role": "user", "content": prompt}])
             if '```json' in response:
                 json_str = response.split('```json')[1].split('```')[0]
             elif '```' in response:
@@ -1229,7 +1309,7 @@ class ReflectAgent(AgentInterface):
         }
 
     async def _llm_reflect(self, error_analysis, history_analysis, spec, llm_client) -> Dict:
-        """使用 LLM 进行反思"""
+        """使用 LLM 进行反思 - 推理任务，使用 DeepSeek"""
         goal = spec.get('goal', '未知') if spec else '未知'
 
         prompt = f"""分析爬取任务失败的原因并生成改进建议：
@@ -1248,7 +1328,14 @@ class ReflectAgent(AgentInterface):
 }}"""
 
         try:
-            response = await llm_client.chat([{"role": "user", "content": prompt}])
+            # 推理任务 - 使用 reason() 方法
+            if hasattr(llm_client, 'reason'):
+                response = await llm_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    task_type='reasoning'
+                )
+            else:
+                response = await llm_client.chat([{"role": "user", "content": prompt}])
             if '```json' in response:
                 json_str = response.split('```json')[1].split('```')[0]
             elif '```' in response:

@@ -1,0 +1,78 @@
+# Site 4: Indeed Job Listings
+# 招聘网站（职位/薪资/公司Logo/JD HTML）
+
+task_id: "site_04_indeed"
+task_name: "Indeed Software Engineer Job Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "jobs"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: ".jobsearch-JobInfoHeader-title"
+        required: true
+        description: "Job title"
+      - name: "company"
+        type: "text"
+        selector: ".jobsearch-InlineCompanyRating-companyHeader"
+        required: true
+        description: "Company name"
+      - name: "location"
+        type: "text"
+        selector: ".jobsearch-JobInfoHeader-subtitle"
+        required: false
+        description: "Job location"
+      - name: "salary"
+        type: "text"
+        selector: "#salaryInfoAndJobType"
+        required: false
+        description: "Salary range"
+      - name: "description"
+        type: "html"
+        selector: "#jobDescriptionText"
+        required: true
+        description: "Job description HTML"
+      - name: "company_logo"
+        type: "url"
+        selector: ".jobsearch-InlineCompanyRating-companyHeader img"
+        attribute: "src"
+        required: false
+        description: "Company logo URL"
+      - name: "job_type"
+        type: "text"
+        selector: ".jobsearch-JobMetadataHeader-item"
+        required: false
+        description: "Job type (Full-time, etc.)"
+
+start_url: "https://www.indeed.com/hire/job-description/software-engineer"
+
+# Limits
+max_pages: 1
+max_iterations: 3
+depth_limit: 1
+
+# Wait for dynamic content
+wait_strategy:
+  wait_for: "#jobDescriptionText"
+  timeout: 15000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 1
+    max: 3
+
+# Completion criteria
+completion_criteria:
+  min_items: 1
+  quality_threshold: 0.7
+  max_error_rate: 0.2
+
+notes: |
+  - Focus on extracting job description HTML
+  - Company logo images available
+  - Salary information may vary by listing

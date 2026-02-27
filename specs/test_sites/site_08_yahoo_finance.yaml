@@ -1,0 +1,89 @@
+# Site 8: Yahoo Finance Stock Chart
+# 股票/基金图表站（K线SVG/价格）
+
+task_id: "site_08_yahoo_finance"
+task_name: "Yahoo Finance AAPL Stock Chart Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "stock_info"
+    fields:
+      - name: "symbol"
+        type: "text"
+        selector: "h1"
+        required: true
+        description: "Stock symbol"
+      - name: "company_name"
+        type: "text"
+        selector: ".company-name"
+        required: false
+        description: "Company name"
+      - name: "current_price"
+        type: "text"
+        selector: ".livePrice"
+        required: true
+        description: "Current stock price"
+      - name: "price_change"
+        type: "text"
+        selector: ".priceChange"
+        required: false
+        description: "Price change amount"
+      - name: "percent_change"
+        type: "text"
+        selector: ".percentChange"
+        required: false
+        description: "Percentage change"
+      - name: "chart_svg"
+        type: "html"
+        selector: "svg"
+        required: false
+        description: "Stock chart SVG"
+      - name: "volume"
+        type: "text"
+        selector: "[data-testid='volume']"
+        required: false
+        description: "Trading volume"
+      - name: "market_cap"
+        type: "text"
+        selector: "[data-testid='market-cap']"
+        required: false
+        description: "Market cap"
+      - name: "pe_ratio"
+        type: "text"
+        selector: "[data-testid='pe-ratio']"
+        required: false
+        description: "P/E ratio"
+
+start_url: "https://finance.yahoo.com/quote/AAPL/chart"
+
+# Limits
+max_pages: 1
+max_iterations: 3
+depth_limit: 1
+
+# Wait for dynamic content - heavy JS chart
+wait_strategy:
+  wait_for: ".livePrice"
+  timeout: 20000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 2
+    max: 4
+  user_agent_rotation: true
+
+# Completion criteria
+completion_criteria:
+  min_items: 1
+  quality_threshold: 0.6
+  max_error_rate: 0.3
+
+notes: |
+  - Dynamic SVG chart rendering
+  - Real-time price updates
+  - Heavy JavaScript framework
+  - May have consent banners

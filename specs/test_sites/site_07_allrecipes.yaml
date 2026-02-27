@@ -1,0 +1,89 @@
+# Site 7: AllRecipes
+# 菜谱网站（配料JSON/步骤HTML/成品图片）
+
+task_id: "site_07_allrecipes"
+task_name: "AllRecipes Recipe Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "recipes"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: "h1.article-heading"
+        required: true
+        description: "Recipe title"
+      - name: "rating"
+        type: "text"
+        selector: ".mm-recipes-review-star-rating"
+        required: false
+        description: "Recipe rating"
+      - name: "prep_time"
+        type: "text"
+        selector: ".mm-recipes-details__label:contains('Prep') + .mm-recipes-details__value"
+        required: false
+        description: "Prep time"
+      - name: "cook_time"
+        type: "text"
+        selector: ".mm-recipes-details__label:contains('Cook') + .mm-recipes-details__value"
+        required: false
+        description: "Cook time"
+      - name: "servings"
+        type: "text"
+        selector: ".mm-recipes-details__label:contains('Servings') + .mm-recipes-details__value"
+        required: false
+        description: "Number of servings"
+      - name: "ingredients"
+        type: "list"
+        selector: ".mm-recipes-structured-ingredients__list-item"
+        required: true
+        description: "Recipe ingredients"
+      - name: "instructions"
+        type: "html"
+        selector: ".recipe__steps"
+        required: true
+        description: "Cooking instructions HTML"
+      - name: "image_url"
+        type: "url"
+        selector: ".primary-image img"
+        attribute: "src"
+        required: true
+        description: "Recipe final image"
+      - name: "nutrition"
+        type: "text"
+        selector: ".mm-recipes-nutrition-facts"
+        required: false
+        description: "Nutrition facts"
+
+start_url: "https://www.allrecipes.com/"
+
+# Limits
+max_pages: 1
+max_iterations: 3
+depth_limit: 1
+
+# Wait for dynamic content
+wait_strategy:
+  wait_for: ".mm-recipes-structured-ingredients"
+  timeout: 15000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 1
+    max: 3
+
+# Completion criteria
+completion_criteria:
+  min_items: 3
+  quality_threshold: 0.7
+  max_error_rate: 0.2
+
+notes: |
+  - Recipe pages with structured ingredients
+  - Step-by-step instructions as HTML
+  - High-quality food images
+  - May need to click into individual recipes from homepage

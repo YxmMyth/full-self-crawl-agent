@@ -25,9 +25,12 @@ import httpx
 import json
 import os
 import asyncio
+import logging
 from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass
+
+logger = logging.getLogger('llm')
 
 
 class ErrorType(str, Enum):
@@ -115,12 +118,31 @@ class LLMClient:
         self.model = model
         self.api_url = self._get_api_url(api_base)
         # 检测 provider
-        if api_base and 'dashscope' in api_base:
-            self.provider = 'alibaba'
-        elif 'qwen' in model.lower():
-            self.provider = 'alibaba'
+        if api_base:
+            if 'dashscope' in api_base:
+                self.provider = 'alibaba'
+            elif 'deepseek' in api_base:
+                self.provider = 'deepseek'
+            elif 'bigmodel' in api_base:
+                self.provider = 'zhipu'
+            else:
+                # 根据模型名称推断
+                if 'deepseek' in model.lower():
+                    self.provider = 'deepseek'
+                elif 'qwen' in model.lower():
+                    self.provider = 'alibaba'
+                elif 'glm' in model.lower():
+                    self.provider = 'zhipu'
+                else:
+                    self.provider = 'unknown'
         else:
-            self.provider = 'zhipu'
+            # 无 api_base，根据模型名称推断
+            if 'deepseek' in model.lower():
+                self.provider = 'deepseek'
+            elif 'qwen' in model.lower():
+                self.provider = 'alibaba'
+            else:
+                self.provider = 'zhipu'
         self.client = httpx.AsyncClient(timeout=60.0)
         self.call_count = 0
         self.total_tokens = 0
@@ -282,7 +304,7 @@ class LLMClient:
                 delay = self.DEFAULT_RETRY_DELAY * (self.DEFAULT_RETRY_MULTIPLIER ** attempt)
                 if last_error.retry_after:
                     delay = max(delay, last_error.retry_after)
-                print(f"LLM 调用失败，{delay:.1f}秒后重试 (尝试 {attempt + 2}/{max_retries}): {last_error}")
+                logger.warning(f"LLM 调用失败，{delay:.1f}秒后重试 (尝试 {attempt + 2}/{max_retries}): {last_error}")
                 await asyncio.sleep(delay)
                 self.retry_count += 1
 
@@ -327,9 +349,9 @@ class LLMClient:
             else:
                 error_text = response.text
                 error = self._classify_error(response.status_code, error_text)
-                print(f'API Error: {response.status_code} - {error_text}')
-                print(f'Provider: {self.provider}, Model: {self.model}')
-                print(f'URL: {self.api_url}')
+                logger.error(f'API Error: {response.status_code} - {error_text}')
+                logger.debug(f'Provider: {self.provider}, Model: {self.model}')
+                logger.debug(f'URL: {self.api_url}')
 
                 if not error.is_recoverable:
                     raise LLMException(error)
@@ -349,7 +371,7 @@ class LLMClient:
 
         except Exception as e:
             error = self._classify_error(None, str(e))
-            print(f'API Call Error: {str(e)}')
+            logger.error(f'API Call Error: {str(e)}')
             if not error.is_recoverable:
                 raise LLMException(error)
             return None

@@ -42,7 +42,12 @@ class CompletionGate:
         self.failed_gates = []
         self.passed_gates = []
 
-        for gate_condition in spec.get('completion_gate', []):
+        # 优先使用 completion_gate，否则从 completion_criteria 生成
+        gate_conditions = spec.get('completion_gate', [])
+        if not gate_conditions:
+            gate_conditions = self._build_gates_from_criteria(spec.get('completion_criteria', {}))
+
+        for gate_condition in gate_conditions:
             if self._evaluate(gate_condition, state):
                 self.passed_gates.append(gate_condition)
             else:
@@ -57,6 +62,20 @@ class CompletionGate:
         state['gate_passed'] = True
         state['passed_gates'] = self.passed_gates
         return True
+
+    def _build_gates_from_criteria(self, criteria: Dict[str, Any]) -> List[str]:
+        """从 completion_criteria 构建门禁条件"""
+        gates = []
+
+        # 最小数据量
+        min_items = criteria.get('min_items', 1)
+        gates.append(f'sample_count >= {min_items}')
+
+        # 质量阈值
+        quality_threshold = criteria.get('quality_threshold', 0.5)
+        gates.append(f'quality_score >= {quality_threshold}')
+
+        return gates
 
     def _evaluate(self, condition: str, state: Dict[str, Any]) -> bool:
         """

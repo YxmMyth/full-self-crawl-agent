@@ -1,0 +1,81 @@
+# Site 2: TechCrunch News Articles
+# 新闻文章富文本（标题/HTML片段/图片/视频）
+
+task_id: "site_02_techcrunch"
+task_name: "TechCrunch Tech News Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "articles"
+    fields:
+      - name: "title"
+        type: "text"
+        selector: "h2 a"
+        required: true
+        description: "Article title"
+      - name: "summary"
+        type: "text"
+        selector: ".article-content p"
+        required: false
+        description: "Article summary/excerpt"
+      - name: "author"
+        type: "text"
+        selector: ".author-name"
+        required: false
+        description: "Author name"
+      - name: "image_url"
+        type: "url"
+        selector: "img"
+        attribute: "src"
+        required: false
+        description: "Article featured image"
+      - name: "article_url"
+        type: "url"
+        selector: "h2 a"
+        attribute: "href"
+        required: true
+        description: "Article URL"
+      - name: "published_time"
+        type: "text"
+        selector: "time"
+        attribute: "datetime"
+        required: false
+        description: "Publication date"
+      - name: "category"
+        type: "text"
+        selector: ".category-link"
+        required: false
+        description: "Article category"
+
+start_url: "https://techcrunch.com/"
+
+# Limits
+max_pages: 1
+max_iterations: 3
+depth_limit: 1
+
+# Wait for dynamic content
+wait_strategy:
+  wait_for: "article"
+  timeout: 15000
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 1
+    max: 3
+  user_agent_rotation: true
+
+# Completion criteria
+completion_criteria:
+  min_items: 5
+  quality_threshold: 0.7
+  max_error_rate: 0.2
+
+notes: |
+  - Rich HTML content with embedded images and videos
+  - Dynamic loading may require scrolling
+  - Some content may be behind paywall

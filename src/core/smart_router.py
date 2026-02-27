@@ -251,7 +251,7 @@ class SmartRouter:
         goal: str,
         html: Optional[str]
     ) -> Dict[str, Any]:
-        """使用LLM生成策略"""
+        """使用LLM生成策略 - 推理任务，使用 DeepSeek"""
         if self.llm_client is None:
             return self._match_from_library(features, goal)
 
@@ -291,7 +291,14 @@ class SmartRouter:
 """
 
         try:
-            response = await self.llm_client.chat(prompt)
+            # 推理任务 - 使用 reason() 方法或 task_type='reasoning'
+            if hasattr(self.llm_client, 'reason'):
+                response = await self.llm_client.chat(
+                    prompt,
+                    task_type='reasoning'
+                )
+            else:
+                response = await self.llm_client.chat(prompt)
 
             # 解析响应
             if '```json' in response:

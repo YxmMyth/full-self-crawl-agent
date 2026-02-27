@@ -1,0 +1,83 @@
+# Site 6: Zillow Real Estate
+# 房地产楼盘站（户型图SVG/PDF/价格）
+
+task_id: "site_06_zillow"
+task_name: "Zillow Real Estate Extraction"
+created_at: "2026-02-27"
+version: "1.0"
+
+extraction_type: "single_page"
+
+targets:
+  - name: "listings"
+    fields:
+      - name: "address"
+        type: "text"
+        selector: ".address-line"
+        required: true
+        description: "Property address"
+      - name: "price"
+        type: "text"
+        selector: ".price"
+        required: true
+        description: "Property price"
+      - name: "beds"
+        type: "text"
+        selector: ".beds"
+        required: false
+        description: "Number of bedrooms"
+      - name: "baths"
+        type: "text"
+        selector: ".baths"
+        required: false
+        description: "Number of bathrooms"
+      - name: "sqft"
+        type: "text"
+        selector: ".sqft"
+        required: false
+        description: "Square footage"
+      - name: "image_url"
+        type: "url"
+        selector: "img.photo"
+        attribute: "src"
+        required: false
+        description: "Property image"
+      - name: "listing_url"
+        type: "url"
+        selector: "a.listing-link"
+        attribute: "href"
+        required: true
+        description: "Listing detail URL"
+
+start_url: "https://www.zillow.com/"
+
+# Limits
+max_pages: 1
+max_iterations: 5
+depth_limit: 1
+
+# Wait for dynamic content - Zillow uses heavy JS
+wait_strategy:
+  wait_for: ".property-card"
+  timeout: 20000
+  scroll_to_load: true
+
+# Anti-bot measures
+anti_bot:
+  random_delay:
+    min: 3
+    max: 6
+  user_agent_rotation: true
+  stealth_mode: true
+
+# Completion criteria
+completion_criteria:
+  min_items: 5
+  quality_threshold: 0.6
+  max_error_rate: 0.3
+
+notes: |
+  - Heavy JavaScript rendering
+  - May need to scroll to trigger lazy loading
+  - Floor plans (SVG/PDF) in detail pages
+  - Strong anti-bot measures

@@ -3,13 +3,53 @@
 在沙箱环境中安全执行代码
 """
 
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Set
 import asyncio
 import subprocess
 import tempfile
 import os
 import json
 import sys
+import re
+import logging
+
+logger = logging.getLogger('executor')
+
+
+# 危险模块和函数黑名单
+DANGEROUS_MODULES: Set[str] = {
+    'os', 'subprocess', 'sys', 'shutil', 'socket', 'requests',
+    'urllib', 'http', 'ftplib', 'telnetlib', 'smtplib', 'poplib',
+    'imaplib', 'nntplib', 'popen2', 'commands', 'pexpect',
+    'paramiko', 'fabric', 'cryptography', 'pickle', 'shelve',
+    'marshal', 'imp', 'importlib', 'code', 'codeop', 'compile',
+    'exec', 'eval', '__import__', 'builtins'
+}
+
+DANGEROUS_FUNCTIONS: Set[str] = {
+    'eval', 'exec', 'compile', 'execfile', 'open', 'input',
+    'raw_input', 'file', 'reload', '__import__', 'globals',
+    'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr',
+    'hasattr', 'type', 'object', 'base64.b64decode',
+    'ctypes', 'multiprocessing', 'threading'
+}
+
+DANGEROUS_PATTERNS = [
+    r'\bos\.system\b',
+    r'\bos\.popen\b',
+    r'\bsubprocess\.',
+    r'\beval\s*\(',
+    r'\bexec\s*\(',
+    r'\b__import__\s*\(',
+    r'\bopen\s*\(["\']',
+    r'\bcompile\s*\(',
+    r'\bglobals\s*\(\)',
+    r'\blocals\s*\(\)',
+    r'\bgetattr\s*\(',
+    r'\bsetattr\s*\(',
+    r'\bdelattr\s*\(',
+    r'\bhasattr\s*\(',
+]
 
 
 class Executor:
@@ -100,13 +140,91 @@ class DefaultSandbox:
     默认沙箱实现
 
     使用 subprocess 执行代码，提供基础隔离
+    包含代码安全检查和危险操作过滤
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, allowed_modules: Optional[Set[str]] = None,
+                 strict_mode: bool = True):
+        """
+        初始化沙箱
 
-    def execute(self, code: str, timeout: int = 30) -> Dict[str, Any]:
-        """执行代码（同步版本）"""
+        Args:
+            allowed_modules: 允许导入的模块白名单
+            strict_mode: 严格模式，启用危险代码检测
+        """
+        self.allowed_modules = allowed_modules or {
+            'json', 're', 'math', 'datetime', 'collections',
+            'itertools', 'functools', 'typing', 'dataclasses',
+            'bs4', 'BeautifulSoup', 'lxml', 'html.parser'
+        }
+        self.strict_mode = strict_mode
+
+    def validate_code(self, code: str) -> Tuple[bool, List[str]]:
+        """
+        验证代码安全性
+
+        Args:
+            code: 要验证的代码
+
+        Returns:
+            (是否安全, 检测到的问题列表)
+        """
+        issues = []
+
+        if not self.strict_mode:
+            return True, issues
+
+        # 检查危险模式
+        for pattern in DANGEROUS_PATTERNS:
+            matches = re.findall(pattern, code)
+            if matches:
+                issues.append(f"检测到危险操作: {pattern}")
+
+        # 检查危险模块导入
+        import_patterns = [
+            r'^\s*import\s+(\w+)',
+            r'^\s*from\s+(\w+)\s+import',
+        ]
+
+        for pattern in import_patterns:
+            for match in re.finditer(pattern, code, re.MULTILINE):
+                module = match.group(1)
+                if module in DANGEROUS_MODULES:
+                    issues.append(f"检测到危险模块导入: {module}")
+
+        # 检查危险函数调用
+        for func in DANGEROUS_FUNCTIONS:
+            pattern = rf'\b{re.escape(func)}\s*\('
+            if re.search(pattern, code):
+                issues.append(f"检测到危险函数调用: {func}")
+
+        return len(issues) == 0, issues
+
+    def execute(self, code: str, timeout: int = 30, skip_validation: bool = False) -> Dict[str, Any]:
+        """
+        执行代码（同步版本）
+
+        Args:
+            code: Python 代码
+            timeout: 超时时间（秒）
+            skip_validation: 跳过安全验证
+
+        Returns:
+            执行结果字典
+        """
+        # 安全验证
+        if not skip_validation and self.strict_mode:
+            is_safe, issues = self.validate_code(code)
+            if not is_safe:
+                logger.warning(f"代码安全检查失败: {issues}")
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': f"安全检查失败:\n" + "\n".join(issues),
+                    'returncode': -1,
+                    'error': 'security_violation'
+                }
+
         # 创建临时文件
         with tempfile.NamedTemporaryFile(
             mode='w',
@@ -136,6 +254,7 @@ class DefaultSandbox:
             }
 
         except subprocess.TimeoutExpired:
+            logger.warning(f"代码执行超时 ({timeout}s)")
             return {
                 'success': False,
                 'stdout': '',
@@ -145,6 +264,7 @@ class DefaultSandbox:
             }
 
         except Exception as e:
+            logger.error(f"代码执行错误: {e}")
             return {
                 'success': False,
                 'stdout': '',
@@ -158,12 +278,33 @@ class DefaultSandbox:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
 
-    async def execute_async(self, code: str, timeout: int = 30) -> Dict[str, Any]:
+    async def execute_async(self, code: str, timeout: int = 30, skip_validation: bool = False) -> Dict[str, Any]:
         """
         执行代码（异步版本）
 
         使用 asyncio.create_subprocess_exec 避免阻塞事件循环
+
+        Args:
+            code: Python 代码
+            timeout: 超时时间（秒）
+            skip_validation: 跳过安全验证
+
+        Returns:
+            执行结果字典
         """
+        # 安全验证
+        if not skip_validation and self.strict_mode:
+            is_safe, issues = self.validate_code(code)
+            if not is_safe:
+                logger.warning(f"代码安全检查失败: {issues}")
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': f"安全检查失败:\n" + "\n".join(issues),
+                    'returncode': -1,
+                    'error': 'security_violation'
+                }
+
         # 创建临时文件
         with tempfile.NamedTemporaryFile(
             mode='w',
@@ -199,6 +340,7 @@ class DefaultSandbox:
 
             except asyncio.TimeoutError:
                 # 超时时终止进程
+                logger.warning(f"代码执行超时 ({timeout}s)")
                 try:
                     proc.kill()
                     await proc.wait()
@@ -214,6 +356,7 @@ class DefaultSandbox:
                 }
 
         except Exception as e:
+            logger.error(f"代码执行错误: {e}")
             return {
                 'success': False,
                 'stdout': '',

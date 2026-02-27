@@ -7,6 +7,72 @@ from playwright.async_api import async_playwright, Browser, Page, Error as Playw
 import asyncio
 import functools
 import random
+import logging
+import subprocess
+import shutil
+
+logger = logging.getLogger('browser')
+
+
+def check_playwright_browsers() -> Tuple[bool, str]:
+    """
+    检查 Playwright 浏览器是否已安装
+
+    Returns:
+        (是否已安装, 安装说明)
+    """
+    try:
+        # 检查 playwright 命令是否存在
+        playwright_cmd = shutil.which('playwright')
+        if playwright_cmd:
+            # 尝试检查浏览器状态
+            result = subprocess.run(
+                [playwright_cmd, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                logger.debug(f"Playwright version: {version}")
+
+        # 检查浏览器目录
+        import os
+        from pathlib import Path
+
+        # 常见的浏览器缓存位置
+        browser_paths = [
+            Path.home() / '.cache' / 'ms-playwright',
+            Path.home() / 'AppData' / 'Local' / 'ms-playwright' if os.name == 'nt' else None,
+        ]
+
+        for path in browser_paths:
+            if path and path.exists():
+                # 检查是否有 chromium 目录
+                chromium_dirs = list(path.glob('chromium-*'))
+                if chromium_dirs:
+                    logger.debug(f"Found Chromium at: {chromium_dirs[0]}")
+                    return True, ""
+
+        # 浏览器未找到
+        install_cmd = "playwright install chromium"
+        if os.name == 'nt':
+            install_cmd = "python -m playwright install chromium"
+
+        return False, f"""
+Playwright 浏览器未安装。请运行以下命令安装：
+
+    {install_cmd}
+
+或者安装所有浏览器：
+
+    playwright install
+
+详细信息请参考: https://playwright.dev/python/docs/browsers
+"""
+    except Exception as e:
+        logger.warning(f"检查 Playwright 浏览器时出错: {e}")
+        return True, ""  # 假设已安装，让后续启动失败时再提示
 
 
 def with_retry(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 10.0):
@@ -30,10 +96,10 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0, max_delay: float =
                     if attempt < max_retries - 1:
                         # 指数退避 + 随机抖动
                         delay = min(base_delay * (2 ** attempt) + random.uniform(0, 1), max_delay)
-                        print(f"操作失败 (尝试 {attempt + 1}/{max_retries}): {e}, {delay:.1f}秒后重试...")
+                        logger.warning(f"操作失败 (尝试 {attempt + 1}/{max_retries}): {e}, {delay:.1f}秒后重试...")
                         await asyncio.sleep(delay)
                     else:
-                        print(f"操作失败，已达最大重试次数 ({max_retries}): {e}")
+                        logger.error(f"操作失败，已达最大重试次数 ({max_retries}): {e}")
             raise last_error
         return wrapper
     return decorator
@@ -52,32 +118,51 @@ class BrowserTool:
     - 网络请求拦截
     """
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, check_browsers: bool = True):
         self.headless = headless
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
         self.context = None
 
+        # 启动时检查浏览器
+        if check_browsers:
+            installed, message = check_playwright_browsers()
+            if not installed:
+                logger.warning(message)
+
     async def start(self) -> None:
         """启动浏览器"""
-        self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
-            headless=self.headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--no-sandbox'
-            ]
-        )
+        try:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox'
+                ]
+            )
 
-        # 创建上下文（可配置用户代理、视口等）
-        self.context = await self.browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        )
+            # 创建上下文（可配置用户代理、视口等）
+            self.context = await self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            )
 
-        self.page = await self.context.new_page()
+            self.page = await self.context.new_page()
+            logger.info("浏览器启动成功")
+
+        except Exception as e:
+            logger.error(f"浏览器启动失败: {e}")
+
+            # 检查是否是浏览器未安装
+            if 'Executable doesn\'t exist' in str(e) or 'chromium' in str(e).lower():
+                installed, message = check_playwright_browsers()
+                if not installed:
+                    raise RuntimeError(f"浏览器启动失败: {message}") from e
+
+            raise
 
     async def stop(self) -> None:
         """关闭浏览器"""
