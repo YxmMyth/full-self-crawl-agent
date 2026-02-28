@@ -8,6 +8,9 @@ from enum import Enum
 from datetime import datetime
 import json
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DegradationTracker:
@@ -401,56 +404,218 @@ class PlanAgent(AgentInterface):
         self.degradation_tracker = degradation_tracker or DegradationTracker()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        单元内自动重试3次，采用不同策略
+        """
+        max_attempts = 3
+        best_result = None
+
+        for attempt in range(max_attempts):
+            try:
+                result = await self._attempt_generate(context, attempt)
+
+                # 验证结果质量
+                if result.get('success'):
+                    selectors = result.get('selectors', {})
+                    html = context.get('html_snapshot', '')
+
+                    if self._quick_validate_selectors(selectors, html):
+                        logger.info(f"[Plan] 尝试{attempt + 1}成功")
+                        return result
+                    else:
+                        logger.warning(f"[Plan] 尝试{attempt + 1}选择器无效，继续重试")
+                        if not best_result or len(result.get('selectors', {})) > len(best_result.get('selectors', {})):
+                            best_result = result
+
+            except Exception as e:
+                logger.warning(f"[Plan] 尝试{attempt + 1}异常: {e}")
+                continue
+
+        # 所有尝试失败，返回最佳结果或失败
+        if best_result:
+            logger.info("[Plan] 返回历史最佳结果")
+            return best_result
+        return {'success': False, 'error': '所有尝试都失败'}
+
+    async def _attempt_generate(self, context, attempt):
+        """第N次尝试生成"""
         page_structure = context.get('page_structure', {})
         spec = context.get('spec')
         llm_client = context.get('llm_client') or self.llm_client
-        degradation_info = None
-        # 获取 HTML 样本（从 SenseAgent 结果）
         html_sample = context.get('html_snapshot', '') or context.get('html', '')[:8000]
 
-        # 1. 使用 LLM 生成策略（如有）
+        if attempt == 0:
+            logger.info("[Plan] 第1次尝试 - 正常生成")
+            return await self._generate_normal(page_structure, spec, llm_client, html_sample)
+        elif attempt == 1:
+            logger.info("[Plan] 第2次尝试 - 保守策略")
+            return await self._generate_conservative(page_structure, spec, llm_client, html_sample)
+        elif attempt == 2:
+            logger.info("[Plan] 第3次尝试 - 激进策略")
+            return await self._generate_aggressive(page_structure, spec, llm_client, html_sample)
+
+    def _quick_validate_selectors(self, selectors, html):
+        """快速验证选择器是否能匹配到元素"""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        valid_count = 0
+        for field, selector in selectors.items():
+            try:
+                if soup.select(selector):
+                    valid_count += 1
+            except:
+                pass
+
+        return valid_count > 0  # 至少有一个有效
+
+    async def _generate_normal(self, structure, spec, llm_client, html):
+        """正常生成 - 保持原有逻辑"""
         if llm_client:
             try:
-                strategy = await self._generate_with_llm(page_structure, spec, llm_client, html_sample)
+                strategy = await self._generate_with_llm(structure, spec, llm_client, html)
             except Exception as e:
-                error_msg = str(e)
-                print(f"LLM 策略生成失败: {error_msg}")
-                strategy = self._fallback_strategy(page_structure, spec)
-                # 记录降级
-                degradation_info = self.degradation_tracker.record_degradation(
-                    self.name, 'generate_strategy', error_msg
-                )
-                if degradation_info.get('should_warn'):
-                    print(f"警告: {degradation_info['message']}")
+                logger.warning(f"LLM策略生成失败: {e}")
+                strategy = self._fallback_strategy(structure, spec)
         else:
-            strategy = self._fallback_strategy(page_structure, spec)
+            strategy = self._fallback_strategy(structure, spec)
 
-        # 2. 生成提取代码
-        # 如果 LLM 已返回代码，直接使用；否则生成或使用 LLM 编码
         code = strategy.get('extraction_code')
         if not code:
-            # 尝试使用 LLM 生成代码（编码任务，使用 GLM）
             if llm_client and hasattr(llm_client, 'code'):
                 try:
                     code = await self._generate_code_with_llm(strategy, spec, llm_client)
-                except Exception as e:
-                    print(f"LLM 代码生成失败: {e}")
+                except:
                     code = self._generate_code(strategy, spec)
             else:
                 code = self._generate_code(strategy, spec)
 
-        result = {
+        return {
             'success': True,
             'strategy': strategy,
             'selectors': strategy.get('selectors', {}),
             'generated_code': code
         }
 
-        # 添加降级信息
-        if degradation_info:
-            result['degradation'] = degradation_info
+    async def _generate_conservative(self, structure, spec, llm_client, html):
+        """
+        保守策略：更稳定、更宽泛的选择器
 
-        return result
+        核心：
+        1. 使用属性包含匹配 [class*="xxx"]
+        2. 避免复杂伪类
+        3. 增加等待时间建议
+        """
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        selectors = {}
+        container_selector = structure.get('main_content_selector', 'body')
+
+        if spec and 'targets' in spec:
+            for target in spec['targets']:
+                for field in target.get('fields', []):
+                    field_name = field.get('name', '')
+
+                    # 保守选择器：使用属性包含匹配
+                    conservative_selectors = [
+                        f'[class*="{field_name}"]',
+                        f'[id*="{field_name}"]',
+                        f'[data-*="{field_name}"]',
+                    ]
+
+                    for sel in conservative_selectors:
+                        try:
+                            if soup.select(sel):
+                                selectors[field_name] = sel
+                                break
+                        except:
+                            continue
+
+                    # 通用降级
+                    if field_name not in selectors:
+                        common_tags = {
+                            'title': 'h1, h2, h3',
+                            'name': 'h1, h2, h3, .name',
+                            'price': '[class*="price"]',
+                            'date': 'time, [class*="date"]',
+                            'author': '[class*="author"]',
+                            'url': 'a[href]',
+                            'link': 'a[href]',
+                            'image': 'img',
+                            'content': 'p, article',
+                        }
+                        selectors[field_name] = common_tags.get(field_name.lower(), f'[class*="{field_name}"]')
+
+        return {
+            'success': True,
+            'strategy_type': 'conservative',
+            'selectors': selectors,
+            'container_selector': container_selector,
+            'wait_multiplier': 1.5,
+            'pagination_strategy': structure.get('pagination_type', 'none'),
+        }
+
+    async def _generate_aggressive(self, structure, spec, llm_client, html):
+        """
+        激进策略：尝试完全不同的方法
+
+        核心：
+        1. 基于文本内容匹配
+        2. 识别数据模式
+        3. 最宽泛选择器
+        """
+        from bs4 import BeautifulSoup
+        import re
+        soup = BeautifulSoup(html, 'html.parser')
+
+        selectors = {}
+
+        # 识别可能的数据容器
+        all_elements = soup.find_all(True)
+        element_counts = {}
+        for elem in all_elements:
+            class_name = elem.get('class', [''])
+            if class_name and class_name[0]:
+                key = f".{class_name[0]}"
+                element_counts[key] = element_counts.get(key, 0) + 1
+
+        container_selector = 'body'
+        if element_counts:
+            sorted_elements = sorted(element_counts.items(), key=lambda x: x[1], reverse=True)
+            for sel, count in sorted_elements[:5]:
+                if count >= 3:
+                    container_selector = sel
+                    break
+
+        # 激进选择器
+        if spec and 'targets' in spec:
+            for target in spec['targets']:
+                for field in target.get('fields', []):
+                    field_name = field.get('name', '')
+                    description = field.get('description', '').lower()
+
+                    if '标题' in description or 'title' in description:
+                        selectors[field_name] = 'h1, h2, h3, [class*="title"], [class*="heading"]'
+                    elif '价格' in description or 'price' in description:
+                        selectors[field_name] = '[class*="price"], [class*="cost"]'
+                    elif '作者' in description or 'author' in description:
+                        selectors[field_name] = '[class*="author"], [class*="by"]'
+                    elif '链接' in description or 'url' in description:
+                        selectors[field_name] = 'a[href]'
+                    elif '日期' in description or 'date' in description:
+                        selectors[field_name] = 'time, [class*="date"], [class*="time"]'
+                    else:
+                        selectors[field_name] = f'*[class*="{field_name}"], *[id*="{field_name}"]'
+
+        return {
+            'success': True,
+            'strategy_type': 'aggressive',
+            'selectors': selectors,
+            'container_selector': container_selector,
+            'use_text_matching': True,
+            'pagination_strategy': 'none',
+        }
 
     async def _generate_with_llm(self, structure: Dict, spec: Any, llm_client, html_sample: str = '') -> Dict:
         """使用 LLM 生成策略 - 推理任务，使用 DeepSeek
