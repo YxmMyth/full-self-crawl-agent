@@ -54,6 +54,51 @@ class DegradationTracker:
         }
 
 
+def _safe_parse_json(response: str, context: str = "JSON解析") -> Dict:
+    """
+    安全解析 LLM 响应中的 JSON
+
+    Args:
+        response: LLM 返回的原始响应字符串
+        context: 解析上下文描述，用于错误日志
+
+    Returns:
+        解析后的字典，失败时返回空字典
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if not response or not response.strip():
+        logger.warning(f"{context}失败: LLM 返回空响应")
+        return {}
+
+    try:
+        # 尝试提取代码块中的 JSON
+        if '```json' in response:
+            json_str = response.split('```json')[1].split('```')[0].strip()
+        elif '```' in response:
+            json_str = response.split('```')[1].split('```')[0].strip()
+        else:
+            json_str = response.strip()
+
+        # 检查是否为空字符串
+        if not json_str:
+            logger.warning(f"{context}失败: 提取的 JSON 字符串为空")
+            return {}
+
+        # 尝试解析
+        result = json.loads(json_str)
+        return result if result else {}
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"{context}失败: JSON 解析错误 - {e}")
+        logger.debug(f"原始响应前200字符: {response[:200]}")
+        return {}
+    except Exception as e:
+        logger.warning(f"{context}失败: 解析异常 - {e}")
+        return {}
+
+
 class AgentCapability(str, Enum):
     """智能体能力"""
     SENSE = "sense"  # 感知页面结构和特征
@@ -147,16 +192,23 @@ class SenseAgent(AgentInterface):
                     print(f"警告: {degradation_info['message']}")
 
         # 5. 检测反爬
-        anti_bot = self._detect_anti_bot(html)
+        anti_bot_info = self._detect_anti_bot(html)
 
         result = {
             'success': True,
             'structure': features,
             'features': features,
-            'anti_bot_detected': anti_bot,
+            'anti_bot_detected': anti_bot_info.get('detected', False),
+            'anti_bot_info': anti_bot_info,  # 新增：详细反爬信息
             'html_snapshot': html[:50000],  # 限制大小
             'screenshot': screenshot
         }
+
+        # 反爬警告
+        if anti_bot_info.get('detected'):
+            print(f"[SenseAgent] 检测到反爬机制: {anti_bot_info.get('type', 'unknown')}")
+            if anti_bot_info.get('handling_suggestions'):
+                print(f"  处理建议: {anti_bot_info['handling_suggestions'][:2]}")
 
         # 添加降级信息
         if degradation_info:
@@ -246,30 +298,90 @@ HTML 片段：
     "special_handling": ["login", "captcha", "spa"]
 }}"""
         try:
-            # 推理任务 - 使用 reason() 方法
+            # 推理任务 - 使用 reason() 方法（DeepSeek）
             if hasattr(llm_client, 'reason'):
-                response = await llm_client.chat(
-                    [{"role": "user", "content": prompt}],
-                    task_type='reasoning'
-                )
+                response = await llm_client.reason(prompt)
             else:
                 response = await llm_client.chat([{"role": "user", "content": prompt}])
-            # 解析 JSON
-            if '```json' in response:
-                json_str = response.split('```json')[1].split('```')[0]
-            elif '```' in response:
-                json_str = response.split('```')[1].split('```')[0]
-            else:
-                json_str = response
-            return json.loads(json_str)
+            # 安全解析 JSON
+            return _safe_parse_json(response, "LLM 感知分析")
         except Exception as e:
-            print(f"LLM 分析解析失败: {e}")
+            print(f"LLM 分析失败: {e}")
             return {}
 
-    def _detect_anti_bot(self, html: str) -> bool:
-        """检测反爬机制"""
-        anti_bot_keywords = ['cloudflare', 'recaptcha', 'challenge', 'cf-', 'turnstile']
-        return any(keyword in html.lower() for keyword in anti_bot_keywords)
+    def _detect_anti_bot(self, html: str) -> Dict[str, Any]:
+        """
+        检测反爬机制并返回详细信息
+
+        改进：不仅检测，还返回处理建议
+        """
+        anti_bot_info = {
+            'detected': False,
+            'type': None,
+            'confidence': 0,
+            'handling_suggestions': [],
+            'requires_stealth': False
+        }
+
+        html_lower = html.lower()
+
+        # Cloudflare Turnstile 检测
+        if 'turnstile' in html_lower or 'cf-turnstile' in html_lower:
+            anti_bot_info.update({
+                'detected': True,
+                'type': 'cloudflare_turnstile',
+                'confidence': 0.9,
+                'handling_suggestions': [
+                    '使用隐形浏览器模式',
+                    '等待 JavaScript 挑战完成',
+                    '尝试人工验证后继续'
+                ],
+                'requires_stealth': True
+            })
+
+        # Cloudflare 一般检测
+        elif 'cloudflare' in html_lower or 'cf-' in html_lower:
+            anti_bot_info.update({
+                'detected': True,
+                'type': 'cloudflare',
+                'confidence': 0.8,
+                'handling_suggestions': [
+                    '检查是否为浏览器验证页面',
+                    '增加等待时间',
+                    '使用隐形浏览器模式'
+                ],
+                'requires_stealth': True
+            })
+
+        # reCAPTCHA 检测
+        elif 'recaptcha' in html_lower or 'g-recaptcha' in html_lower:
+            anti_bot_info.update({
+                'detected': True,
+                'type': 'recaptcha',
+                'confidence': 0.9,
+                'handling_suggestions': [
+                    '需要人工处理验证码',
+                    '使用验证码识别服务',
+                    '切换到其他数据源'
+                ],
+                'requires_stealth': False
+            })
+
+        # 通用挑战页面
+        elif 'challenge' in html_lower and ('form' in html_lower or 'verify' in html_lower):
+            anti_bot_info.update({
+                'detected': True,
+                'type': 'challenge_page',
+                'confidence': 0.7,
+                'handling_suggestions': [
+                    '检查是否需要人工验证',
+                    '尝试等待页面自动通过',
+                    '检查 cookies 是否正确'
+                ],
+                'requires_stealth': True
+            })
+
+        return anti_bot_info
 
     def get_description(self) -> str:
         return "感知页面结构和特征，识别页面类型和反爬机制"
@@ -293,11 +405,13 @@ class PlanAgent(AgentInterface):
         spec = context.get('spec')
         llm_client = context.get('llm_client') or self.llm_client
         degradation_info = None
+        # 获取 HTML 样本（从 SenseAgent 结果）
+        html_sample = context.get('html_snapshot', '') or context.get('html', '')[:8000]
 
         # 1. 使用 LLM 生成策略（如有）
         if llm_client:
             try:
-                strategy = await self._generate_with_llm(page_structure, spec, llm_client)
+                strategy = await self._generate_with_llm(page_structure, spec, llm_client, html_sample)
             except Exception as e:
                 error_msg = str(e)
                 print(f"LLM 策略生成失败: {error_msg}")
@@ -338,51 +452,275 @@ class PlanAgent(AgentInterface):
 
         return result
 
-    async def _generate_with_llm(self, structure: Dict, spec: Any, llm_client) -> Dict:
-        """使用 LLM 生成策略 - 推理任务，使用 DeepSeek"""
+    async def _generate_with_llm(self, structure: Dict, spec: Any, llm_client, html_sample: str = '') -> Dict:
+        """使用 LLM 生成策略 - 推理任务，使用 DeepSeek
+
+        改进：
+        1. 接收 HTML 样本，让 LLM 能看到真实 DOM 结构
+        2. 支持目标驱动模式：字段可以只有 description，由 LLM 推断选择器
+        """
         targets = spec.get('targets', []) if spec else []
 
-        prompt = f"""基于页面结构分析，生成数据提取策略。
+        # 构建字段描述信息，包含 description 和 examples
+        fields_with_descriptions = []
+        for target in targets:
+            for field in target.get('fields', []):
+                field_info = {
+                    'name': field.get('name'),
+                    'selector': field.get('selector'),  # 可能为空
+                    'description': field.get('description', ''),
+                    'examples': field.get('examples', []),
+                    'required': field.get('required', False),
+                    'type': field.get('type', 'text')
+                }
+                fields_with_descriptions.append(field_info)
+
+        # 提取 HTML 样本中的关键元素用于选择器推断
+        html_context = self._extract_html_context(html_sample, targets)
+
+        prompt = f"""基于页面结构分析和真实 HTML 内容，生成数据提取策略。
 
 页面分析结果：
 {json.dumps(structure, ensure_ascii=False, indent=2)}
 
-需要提取的字段：
-{json.dumps(targets, ensure_ascii=False, indent=2)}
+需要提取的字段（目标驱动模式）：
+{json.dumps(fields_with_descriptions, ensure_ascii=False, indent=2)}
 
-请输出 JSON 格式的提取策略：
+HTML 样本（关键元素）：
+```
+{html_context}
+```
+
+重要规则：
+1. 如果字段已有 selector，优先使用但需验证其在 HTML 中的有效性
+2. 如果字段只有 description 没有 selector，根据语义描述推断最可能的 CSS 选择器
+3. 利用 examples 示例值辅助理解字段的语义和格式
+4. 基于 HTML 结构和字段语义进行智能匹配
+
+【选择器语法要求 - 非常重要】：
+- 只使用标准 CSS 选择器（如 div.title, a[href*="/pdf/"], .list-item）
+- 不要使用 Scrapy/parsel 伪元素语法（::attr(), ::text, ::extract()）
+- 不要使用伪类选择器（:contains, :has, :first-child 之外的）
+- 对于属性提取（如 href, src），在 JSON 中用 "attribute": "href" 表示
+
+请分析 HTML 结构，为每个目标字段生成最可能的 CSS 选择器。
+
+输出 JSON 格式的提取策略：
 {{
-    "strategy_type": "css|xpath|regex|api",
-    "selectors": {{"field_name": "选择器"}},
+    "strategy_type": "css",
+    "selectors": {{"field_name": "标准CSS选择器"}},
+    "attributes": {{"field_name": "要提取的属性名（如href,text）"}},
     "container_selector": "数据容器选择器",
-    "extraction_code": "完整的 Python 提取代码",
     "pagination_strategy": "none|click|scroll|url",
     "pagination_selector": "下一页按钮选择器",
-    "estimated_items": 100
+    "estimated_items": 100,
+    "selector_confidence": {{"field_name": "high|medium|low"}},
+    "selector_reasoning": {{"field_name": "推断依据说明"}}
 }}"""
-        # 推理任务 - 使用 reason() 方法
+        # 推理任务 - 使用 reason() 方法（DeepSeek）
         if hasattr(llm_client, 'reason'):
-            response = await llm_client.chat(
-                [{"role": "user", "content": prompt}],
-                task_type='reasoning'
-            )
+            response = await llm_client.reason(prompt)
         else:
             response = await llm_client.chat([{"role": "user", "content": prompt}])
         # 解析并返回
         try:
-            if '```json' in response:
-                json_str = response.split('```json')[1].split('```')[0]
-            elif '```' in response:
-                json_str = response.split('```')[1].split('```')[0]
-            else:
-                json_str = response
-            return json.loads(json_str)
+            return _safe_parse_json(response, "LLM 策略生成")
         except:
             return self._fallback_strategy(structure, spec)
 
+    def _extract_html_context(self, html: str, targets: List) -> str:
+        """
+        从 HTML 中提取与目标字段相关的上下文
+
+        改进：
+        1. 支持基于 description 的语义搜索
+        2. 当字段没有 selector 时，根据描述智能查找相关元素
+        """
+        if not html:
+            return "(无 HTML 内容)"
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        context_parts = []
+
+        # 收集所有字段信息（包含 description）
+        all_fields = []
+        for target in targets:
+            for field in target.get('fields', []):
+                all_fields.append({
+                    'name': field.get('name', ''),
+                    'selector': field.get('selector', ''),
+                    'description': field.get('description', ''),
+                    'examples': field.get('examples', []),
+                    'has_selector': bool(field.get('selector', ''))
+                })
+
+        # 1. 提取常见数据容器
+        container_tags = ['article', 'div[class*="item"]', 'div[class*="card"]',
+                         'div[class*="post"]', 'li', 'tr']
+        for tag in container_tags:
+            elements = soup.select(tag)[:3]  # 最多3个
+            for elem in elements:
+                text = elem.get_text(strip=True)[:200]
+                if text and len(text) > 20:
+                    context_parts.append(f"容器示例 ({tag}):\n{elem.prettify()[:500]}")
+                    break
+
+        # 2. 为每个字段查找相关元素
+        for field in all_fields[:10]:  # 最多处理10个字段
+            field_name = field['name']
+            field_selector = field['selector']
+            field_description = field['description']
+            has_selector = field['has_selector']
+
+            # 2a. 如果有 selector，提取对应元素
+            if has_selector and field_selector:
+                try:
+                    matches = soup.select(field_selector)[:2]
+                    if matches:
+                        for match in matches:
+                            context_parts.append(
+                                f"字段 '{field_name}' (selector: {field_selector}):\n"
+                                f"{match.prettify()[:400]}"
+                            )
+                        continue  # 找到了就跳过语义搜索
+                except Exception:
+                    pass  # 选择器无效，继续语义搜索
+
+            # 2b. 无 selector 或选择器无效，进行语义搜索
+            context_found = self._find_elements_by_semantic(
+                soup, field_name, field_description, field.get('examples', [])
+            )
+            if context_found:
+                context_parts.append(context_found)
+
+        # 3. 提取标题链接模式（常见于新闻/产品）
+        links = soup.select('h1 a, h2 a, h3 a, h4 a')[:3]
+        for link in links:
+            context_parts.append(f"标题链接模式:\n{link.prettify()[:300]}")
+
+        # 4. 提取作者/时间模式
+        meta_patterns = ['[class*="author"]', '[class*="date"]', '[class*="time"]', 'time']
+        for pattern in meta_patterns:
+            try:
+                matches = soup.select(pattern)[:2]
+                if matches:
+                    for match in matches:
+                        context_parts.append(f"元数据元素 ({pattern}):\n{match.prettify()[:200]}")
+                        break
+            except:
+                pass
+
+        # 合并并限制总长度
+        result = '\n\n'.join(context_parts[:20])  # 最多20个片段
+        return result[:8000] if result else html[:2000]  # 兜底返回部分原始 HTML
+
+    def _find_elements_by_semantic(self, soup, field_name: str, description: str, examples: List) -> str:
+        """
+        基于字段描述语义搜索相关 HTML 元素
+
+        当 Spec 字段没有 selector 时，根据描述推断可能的选择器
+        """
+        from bs4 import Tag
+
+        # 构建搜索关键词
+        keywords = []
+
+        # 1. 从字段名提取关键词
+        field_lower = field_name.lower().replace('_', ' ').replace('-', ' ')
+        keywords.extend(field_lower.split())
+
+        # 2. 从描述提取关键词
+        if description:
+            # 简单的关键词提取：移除常见停用词
+            stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                         'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                         'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+                         'can', 'need', 'dare', 'ought', 'used', 'to', 'of', 'in',
+                         'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into',
+                         'through', 'during', 'before', 'after', 'above', 'below'}
+            desc_words = description.lower().split()
+            keywords.extend([w for w in desc_words if w not in stop_words and len(w) > 2])
+
+        candidates = []
+        seen_elements = set()
+
+        # 3. 基于关键词搜索元素
+        for keyword in keywords[:5]:  # 最多使用5个关键词
+            # 尝试 class/id 包含关键词
+            patterns = [
+                f'[class*="{keyword}"]',
+                f'[id*="{keyword}"]',
+                f'[data-*="{keyword}"]',
+            ]
+            for pattern in patterns:
+                try:
+                    matches = soup.select(pattern)[:3]
+                    for match in matches:
+                        # 避免重复
+                        elem_id = id(match)
+                        if elem_id not in seen_elements:
+                            seen_elements.add(elem_id)
+                            text = match.get_text(strip=True)[:100]
+                            candidates.append({
+                                'element': match,
+                                'keyword': keyword,
+                                'pattern': pattern,
+                                'text_preview': text
+                            })
+                except Exception:
+                    pass
+
+        # 4. 如果有示例值，尝试文本匹配
+        for example in examples[:3]:
+            if example and len(str(example)) > 2:
+                # 搜索包含示例文本的元素
+                for tag in soup.find_all(string=re.compile(re.escape(str(example)), re.I)):
+                    if isinstance(tag, str):
+                        parent = tag.parent
+                    else:
+                        parent = tag
+                    if parent and id(parent) not in seen_elements:
+                        seen_elements.add(id(parent))
+                        candidates.append({
+                            'element': parent,
+                            'keyword': f'example:{example}',
+                            'pattern': 'text_match',
+                            'text_preview': str(example)
+                        })
+
+        # 5. 格式化输出
+        if not candidates:
+            return ""
+
+        result_parts = [f"字段 '{field_name}' 候选元素 (语义搜索):"]
+        if description:
+            result_parts.append(f"  描述: {description}")
+        if examples:
+            result_parts.append(f"  示例: {examples[:3]}")
+
+        for i, cand in enumerate(candidates[:4]):  # 最多展示4个候选
+            elem = cand['element']
+            prettify = elem.prettify()[:300] if isinstance(elem, Tag) else str(elem)[:300]
+            result_parts.append(
+                f"  候选{i+1} [关键词: {cand['keyword']}]:\n"
+                f"    {prettify}"
+            )
+
+        return '\n'.join(result_parts)
+
     def _fallback_strategy(self, structure: Dict[str, Any], spec: Any) -> Dict[str, Any]:
-        """降级策略"""
+        """
+        降级策略
+
+        改进：
+        1. 支持 Spec 中有 selector 的字段
+        2. 对无 selector 的字段，根据字段名生成默认选择器
+        3. 包含字段描述信息帮助后续处理
+        """
         selectors = {}
+        selector_info = {}  # 记录选择器来源
         container_selector = structure.get('main_content_selector', 'body')
 
         if spec and 'targets' in spec:
@@ -390,17 +728,87 @@ class PlanAgent(AgentInterface):
                 for field in target.get('fields', []):
                     field_name = field.get('name', '')
                     field_selector = field.get('selector', '')
-                    if field_name and field_selector:
-                        selectors[field_name] = field_selector
+                    field_description = field.get('description', '')
+
+                    if field_name:
+                        if field_selector:
+                            # 使用 Spec 中定义的选择器
+                            selectors[field_name] = field_selector
+                            selector_info[field_name] = 'from_spec'
+                        else:
+                            # 无 selector，生成基于字段名的默认选择器
+                            default_selector = self._generate_default_selector(field_name, field_description)
+                            selectors[field_name] = default_selector
+                            selector_info[field_name] = 'generated'
 
         return {
             'strategy_type': 'css',
             'selectors': selectors,
+            'selector_info': selector_info,  # 新增：选择器来源信息
             'container_selector': container_selector,
             'pagination_strategy': structure.get('pagination_type', 'none'),
             'pagination_selector': structure.get('pagination_selector'),
             'estimated_items': structure.get('estimated_items', 10)
         }
+
+    def _generate_default_selector(self, field_name: str, description: str = '') -> str:
+        """
+        根据字段名和描述生成默认 CSS 选择器
+
+        用于目标驱动模式下，当字段没有指定 selector 时的降级策略
+        """
+        # 转换字段名为可能的 class/id 格式
+        field_lower = field_name.lower()
+        field_kebab = field_lower.replace('_', '-')  # snake_case -> kebab-case
+        field_camel = ''.join(word.capitalize() for word in field_lower.split('_'))  # PascalCase
+
+        # 常见字段名到选择器的映射
+        common_mappings = {
+            'title': 'h1, h2, h3, .title, [class*="title"]',
+            'name': '.name, [class*="name"], h1, h2',
+            'price': '.price, [class*="price"]',
+            'date': 'time, .date, [class*="date"]',
+            'author': '.author, [class*="author"]',
+            'description': '.description, .desc, [class*="desc"], p',
+            'content': '.content, .body, article, [class*="content"]',
+            'image': 'img, [class*="image"], [class*="img"]',
+            'url': 'a, [href]',
+            'link': 'a, [href]',
+            'id': '[id], [data-id], [class*="id"]',
+            'summary': '.summary, .abstract, [class*="summary"]',
+            'abstract': '.abstract, .summary, [class*="abstract"]',
+            'tag': '.tag, [class*="tag"]',
+            'category': '.category, [class*="category"]',
+        }
+
+        # 1. 检查常见映射
+        if field_lower in common_mappings:
+            return common_mappings[field_lower]
+
+        # 2. 基于 description 关键词推断
+        if description:
+            desc_lower = description.lower()
+            for keyword, selector in [
+                ('标题', 'h1, h2, h3, [class*="title"]'),
+                ('title', 'h1, h2, h3, [class*="title"]'),
+                ('价格', '[class*="price"]'),
+                ('price', '[class*="price"]'),
+                ('作者', '[class*="author"]'),
+                ('author', '[class*="author"]'),
+                ('时间', 'time, [class*="date"], [class*="time"]'),
+                ('date', 'time, [class*="date"]'),
+                ('摘要', '.abstract, .summary, [class*="abstract"]'),
+                ('abstract', '.abstract, .summary'),
+                ('链接', 'a, [href]'),
+                ('link', 'a, [href]'),
+                ('图片', 'img, [class*="image"]'),
+                ('image', 'img, [class*="image"]'),
+            ]:
+                if keyword in desc_lower:
+                    return selector
+
+        # 3. 基于字段名生成通用选择器
+        return f'[class*="{field_lower}"], [id*="{field_lower}"], [class*="{field_kebab}"], [class*="{field_camel}"]'
 
     async def _generate_code_with_llm(self, strategy: Dict, spec: Any, llm_client) -> str:
         """使用 LLM 生成代码 - 编码任务，使用 GLM"""
@@ -428,12 +836,9 @@ class PlanAgent(AgentInterface):
 只输出代码，不要解释。"""
 
         try:
-            # 编码任务 - 使用 code() 方法
+            # 编码任务 - 使用 code() 方法（GLM）
             if hasattr(llm_client, 'code'):
-                response = await llm_client.chat(
-                    [{"role": "user", "content": prompt}],
-                    task_type='coding'
-                )
+                response = await llm_client.code(prompt)
             else:
                 response = await llm_client.chat([{"role": "user", "content": prompt}])
 
@@ -550,6 +955,164 @@ class ExtractionMetrics:
         return max(0, base_score - required_penalty)
 
 
+class SelectorValidator:
+    """
+    选择器预验证器
+
+    在执行提取前验证选择器是否能匹配到元素，
+    提前发现问题，避免无效迭代。
+    """
+
+    def __init__(self, html: str):
+        from bs4 import BeautifulSoup
+        self.soup = BeautifulSoup(html, 'html.parser')
+
+    def validate_selectors(self, selectors: Dict[str, str],
+                           container_selector: str = None) -> Dict[str, Any]:
+        """
+        验证选择器有效性
+
+        Returns:
+            {
+                'valid': bool,  # 是否所有选择器都有效
+                'results': {selector: {'found': int, 'sample': str}},
+                'warnings': [str],
+                'suggestions': {field: [str]}
+            }
+        """
+        results = {}
+        warnings = []
+        suggestions = {}
+
+        # 验证容器选择器
+        if container_selector:
+            containers = self.soup.select(container_selector)
+            if not containers:
+                warnings.append(f"容器选择器 '{container_selector}' 未匹配到任何元素")
+                # 尝试推荐替代容器
+                alt_containers = self._find_alternative_containers()
+                suggestions['_container'] = alt_containers
+            results['_container'] = {
+                'selector': container_selector,
+                'found': len(containers),
+                'sample': str(containers[0])[:200] if containers else None
+            }
+
+        # 验证字段选择器
+        for field_name, selector in selectors.items():
+            if field_name.startswith('_'):
+                continue
+
+            try:
+                elements = self.soup.select(selector)
+                found = len(elements)
+
+                results[field_name] = {
+                    'selector': selector,
+                    'found': found,
+                    'sample': elements[0].get_text(strip=True)[:100] if elements else None
+                }
+
+                if found == 0:
+                    warnings.append(f"选择器 '{selector}' (字段: {field_name}) 未匹配到任何元素")
+                    # 尝试推荐替代选择器
+                    alt_selectors = self._find_alternative_selectors(field_name)
+                    if alt_selectors:
+                        suggestions[field_name] = alt_selectors
+
+            except Exception as e:
+                results[field_name] = {
+                    'selector': selector,
+                    'found': 0,
+                    'error': str(e)
+                }
+                warnings.append(f"选择器 '{selector}' 语法错误: {e}")
+
+        # 计算整体有效性
+        valid_count = sum(1 for r in results.values() if r.get('found', 0) > 0)
+        total = len(results)
+        all_valid = valid_count == total and total > 0
+
+        return {
+            'valid': all_valid,
+            'results': results,
+            'warnings': warnings,
+            'suggestions': suggestions,
+            'valid_count': valid_count,
+            'total_count': total
+        }
+
+    def _find_alternative_containers(self) -> List[str]:
+        """寻找替代容器选择器"""
+        alternatives = []
+
+        # 常见容器模式
+        container_patterns = [
+            'article', '.article', '.post', '.item', '.card',
+            '.news-item', '.product', '[class*="item"]',
+            '[class*="card"]', 'li', 'tr'
+        ]
+
+        for pattern in container_patterns:
+            try:
+                elements = self.soup.select(pattern)
+                if len(elements) >= 3:  # 至少3个才可能是数据容器
+                    alternatives.append(f"{pattern} (找到 {len(elements)} 个)")
+                    if len(alternatives) >= 3:
+                        break
+            except:
+                pass
+
+        return alternatives
+
+    def _find_alternative_selectors(self, field_name: str) -> List[str]:
+        """为字段寻找替代选择器"""
+        alternatives = []
+
+        # 基于字段名猜测选择器
+        field_lower = field_name.lower().replace('_', '-')
+        patterns = [
+            f'[class*="{field_lower}"]',
+            f'[id*="{field_lower}"]',
+            f'.{field_lower}',
+            f'#{field_lower}',
+            f'[data-{field_lower}]',
+        ]
+
+        for pattern in patterns:
+            try:
+                elements = self.soup.select(pattern)
+                if elements:
+                    alternatives.append(f"{pattern} (找到 {len(elements)} 个)")
+                    if len(alternatives) >= 3:
+                        break
+            except:
+                pass
+
+        return alternatives
+
+    def get_validation_report(self, validation_result: Dict) -> str:
+        """生成人类可读的验证报告"""
+        lines = ["选择器验证报告:", "-" * 40]
+
+        for field, result in validation_result.get('results', {}).items():
+            found = result.get('found', 0)
+            status = "✓" if found > 0 else "✗"
+            lines.append(f"  {status} {field}: '{result.get('selector')}' -> {found} 个元素")
+
+        if validation_result.get('warnings'):
+            lines.append("\n警告:")
+            for warning in validation_result['warnings']:
+                lines.append(f"  - {warning}")
+
+        if validation_result.get('suggestions'):
+            lines.append("\n建议:")
+            for field, sugs in validation_result['suggestions'].items():
+                lines.append(f"  {field}: {sugs[:3]}")
+
+        return "\n".join(lines)
+
+
 class ActAgent(AgentInterface):
     """执行智能体 - 执行提取操作"""
 
@@ -573,6 +1136,28 @@ class ActAgent(AgentInterface):
 
         # 1. 获取 HTML
         html = await browser.get_html()
+
+        # 新增：预验证选择器
+        validation_result = None
+        if selectors:
+            validator = SelectorValidator(html)
+            validation_result = validator.validate_selectors(
+                selectors,
+                strategy.get('container_selector')
+            )
+
+            if not validation_result['valid']:
+                print(f"[ActAgent] 选择器预验证警告:")
+                for warning in validation_result['warnings'][:5]:
+                    print(f"  - {warning}")
+
+                # 如果有建议的替代选择器，更新 selectors
+                if validation_result['suggestions']:
+                    for field, alts in validation_result['suggestions'].items():
+                        if field != '_container' and alts:
+                            # 提取第一个建议的选择器（去掉注释部分）
+                            alt_selector = alts[0].split(' (')[0]
+                            print(f"  建议: {field} -> {alt_selector}")
 
         # 初始化指标追踪
         metrics = ExtractionMetrics()
@@ -599,12 +1184,18 @@ class ActAgent(AgentInterface):
         metrics.total_items = len(extracted_data)
         metrics.successful_items = sum(1 for item in extracted_data if any(item.values()))
 
-        return {
+        result = {
             'success': True,
             'extracted_data': extracted_data,
             'count': len(extracted_data),
             'extraction_metrics': metrics.get_metrics()
         }
+
+        # 添加选择器验证结果
+        if validation_result:
+            result['selector_validation'] = validation_result
+
+        return result
 
     async def _extract_with_selectors(self, browser, selectors: Dict, strategy: Dict,
                                        metrics: Optional[ExtractionMetrics] = None,
@@ -683,18 +1274,18 @@ class ActAgent(AgentInterface):
                 stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(html.encode()),
+                proc.communicate(html.encode('utf-8', errors='replace')),
                 timeout=60
             )
 
             if proc.returncode == 0 and stdout:
                 try:
-                    return json.loads(stdout.decode())
+                    return json.loads(stdout.decode('utf-8', errors='replace'))
                 except json.JSONDecodeError as e:
                     print(f"JSON 解析失败: {e}")
                     return []
             else:
-                print(f"代码执行失败: {stderr.decode()}")
+                print(f"代码执行失败: {stderr.decode('utf-8', errors='replace')}")
                 return []
         except asyncio.TimeoutError:
             print(f"代码执行超时 (60秒)")
@@ -1067,23 +1658,14 @@ class JudgeAgent(AgentInterface):
 {{"decision": "complete|reflect_and_retry|terminate", "reasoning": "原因"}}"""
 
         try:
-            # 推理任务 - 使用 reason() 方法
+            # 推理任务 - 使用 reason() 方法（DeepSeek）
             if hasattr(llm_client, 'reason'):
-                response = await llm_client.chat(
-                    [{"role": "user", "content": prompt}],
-                    task_type='reasoning'
-                )
+                response = await llm_client.reason(prompt)
             else:
                 response = await llm_client.chat([{"role": "user", "content": prompt}])
-            if '```json' in response:
-                json_str = response.split('```json')[1].split('```')[0]
-            elif '```' in response:
-                json_str = response.split('```')[1].split('```')[0]
-            else:
-                json_str = response
-            return json.loads(json_str)
+            return _safe_parse_json(response, "LLM 决策分析")
         except Exception as e:
-            print(f"LLM 决策解析失败: {e}")
+            print(f"LLM 决策失败: {e}")
             return None
 
     def _get_suggestions(self, decision: str, context: Dict) -> List[str]:
@@ -1228,8 +1810,18 @@ class ReflectAgent(AgentInterface):
         llm_client = context.get('llm_client') or self.llm_client
         degradation_info = None
 
-        # 1. 分析错误模式
-        error_analysis = self._analyze_errors(errors)
+        # 获取提取指标（包含失败的选择器）
+        extraction_metrics = context.get('extraction_metrics', {})
+        failed_selectors = extraction_metrics.get('failed_selectors', {})
+        required_missing = extraction_metrics.get('required_missing', {})
+
+        # 获取 HTML 样本
+        html_sample = context.get('html_snapshot', '') or context.get('html', '')[:6000]
+
+        # 1. 分析错误模式（增强版：包含选择器失败详情）
+        error_analysis = self._analyze_errors_enhanced(
+            errors, failed_selectors, required_missing
+        )
 
         # 2. 分析执行历史
         history_analysis = self._analyze_history(execution_history)
@@ -1238,7 +1830,7 @@ class ReflectAgent(AgentInterface):
         if llm_client:
             try:
                 improvements = await self._llm_reflect(
-                    error_analysis, history_analysis, spec, llm_client
+                    error_analysis, history_analysis, spec, llm_client, html_sample, failed_selectors
                 )
             except Exception as e:
                 error_msg = str(e)
@@ -1296,56 +1888,181 @@ class ReflectAgent(AgentInterface):
             'total_errors': len(errors)
         }
 
-    def _analyze_history(self, history: List[Dict]) -> Dict[str, Any]:
+    def _analyze_history(self, history: List) -> Dict[str, Any]:
         """分析执行历史"""
         if not history:
             return {'summary': '无历史记录'}
 
+        # 处理 StateSnapshot 对象或普通字典
+        def get_item(item, key):
+            if hasattr(item, 'state'):
+                # StateSnapshot 对象
+                return item.state.get(key)
+            else:
+                # 普通字典
+                return item.get(key)
+
         return {
             'total_attempts': len(history),
-            'stages': [h.get('stage') for h in history if h.get('stage')],
-            'last_stage': history[-1].get('stage') if history else None,
-            'quality_trend': [h.get('quality_score') for h in history if h.get('quality_score')]
+            'stages': [get_item(h, 'stage') for h in history if get_item(h, 'stage')],
+            'last_stage': get_item(history[-1], 'stage') if history else None,
+            'quality_trend': [get_item(h, 'quality_score') for h in history if get_item(h, 'quality_score')]
         }
 
-    async def _llm_reflect(self, error_analysis, history_analysis, spec, llm_client) -> Dict:
-        """使用 LLM 进行反思 - 推理任务，使用 DeepSeek"""
+    def _analyze_errors_enhanced(self, errors: List[str], failed_selectors: Dict,
+                                  required_missing: Dict) -> Dict[str, Any]:
+        """
+        增强的错误分析：包含选择器失败详情
+
+        这是改进反思深度的关键：让 LLM 知道哪些选择器失败了
+        """
+        # 基础错误模式分析
+        patterns = {}
+        for error in errors:
+            error_str = str(error).lower()
+            if 'selector' in error_str or 'element' in error_str:
+                key = 'selector_error'
+            elif 'timeout' in error_str:
+                key = 'timeout_error'
+            elif 'network' in error_str or 'connection' in error_str:
+                key = 'network_error'
+            elif 'anti' in error_str or 'captcha' in error_str or 'block' in error_str:
+                key = 'anti_bot_error'
+            else:
+                key = 'unknown_error'
+            patterns[key] = patterns.get(key, 0) + 1
+
+        # 如果有选择器失败，优先标记为选择器错误
+        if failed_selectors:
+            patterns['selector_error'] = patterns.get('selector_error', 0) + sum(failed_selectors.values())
+
+        # 构建详细的选择器失败报告
+        selector_failure_report = []
+        for selector, count in failed_selectors.items():
+            selector_failure_report.append({
+                'selector': selector,
+                'failure_count': count,
+                'reason': '元素未找到或选择器无效'
+            })
+
+        # 构建必填字段缺失报告
+        required_missing_report = []
+        for field, count in required_missing.items():
+            required_missing_report.append({
+                'field': field,
+                'missing_count': count
+            })
+
+        return {
+            'patterns': patterns,
+            'most_common': max(patterns.items(), key=lambda x: x[1])[0] if patterns else 'none',
+            'total_errors': len(errors),
+            'failed_selectors': selector_failure_report,  # 新增：失败选择器详情
+            'required_fields_missing': required_missing_report  # 新增：必填字段缺失
+        }
+
+    async def _llm_reflect(self, error_analysis, history_analysis, spec, llm_client,
+                           html_sample: str = '', failed_selectors: Dict = None) -> Dict:
+        """
+        使用 LLM 进行反思 - 推理任务，使用 DeepSeek
+
+        改进：现在包含失败的选择器详情和 HTML 样本
+        """
         goal = spec.get('goal', '未知') if spec else '未知'
+        failed_selectors = failed_selectors or {}
 
-        prompt = f"""分析爬取任务失败的原因并生成改进建议：
+        # 格式化失败选择器信息
+        failed_selectors_text = ""
+        if failed_selectors:
+            failed_selectors_text = "\n失败的选择器详情：\n"
+            for selector, count in failed_selectors.items():
+                failed_selectors_text += f"  - '{selector}': 匹配失败 {count} 次\n"
 
-错误分析：{json.dumps(error_analysis, ensure_ascii=False)}
-历史记录：{json.dumps(history_analysis, ensure_ascii=False)}
+        # 提取 HTML 上下文
+        html_context = self._extract_html_context_for_reflection(html_sample)
+
+        prompt = f"""分析爬取任务失败的原因并生成具体改进建议：
+
 目标：{goal}
 
-请输出 JSON 格式的改进建议：
+错误模式统计：{json.dumps(error_analysis.get('patterns', {}), ensure_ascii=False)}
+{failed_selectors_text}
+
+质量趋势：{json.dumps(history_analysis.get('quality_trend', []), ensure_ascii=False)}
+
+HTML 样本（关键元素）：
+```
+{html_context}
+```
+
+请基于以上信息，特别是失败的选择器和 HTML 结构，生成具体的改进建议。
+
+输出 JSON 格式：
 {{
     "action": "retry|change_strategy|abort",
-    "reasoning": "原因分析",
-    "selectors": {{"field_name": "新选择器"}},
-    "strategy": "新策略描述",
-    "precautions": ["注意事项"]
+    "reasoning": "基于 HTML 分析的具体原因",
+    "selectors": {{"field_name": "新的 CSS 选择器（基于 HTML 分析生成）"}},
+    "container_selector": "新的容器选择器",
+    "strategy": "具体策略描述",
+    "precautions": ["注意事项"],
+    "alternative_approaches": ["备选方案"]
 }}"""
 
         try:
-            # 推理任务 - 使用 reason() 方法
+            # 推理任务 - 使用 reason() 方法（DeepSeek）
             if hasattr(llm_client, 'reason'):
-                response = await llm_client.chat(
-                    [{"role": "user", "content": prompt}],
-                    task_type='reasoning'
-                )
+                response = await llm_client.reason(prompt)
             else:
                 response = await llm_client.chat([{"role": "user", "content": prompt}])
-            if '```json' in response:
-                json_str = response.split('```json')[1].split('```')[0]
-            elif '```' in response:
-                json_str = response.split('```')[1].split('```')[0]
-            else:
-                json_str = response
-            return json.loads(json_str)
+            return _safe_parse_json(response, "LLM 反思分析")
         except Exception as e:
-            print(f"LLM 反思解析失败: {e}")
+            print(f"LLM 反思失败: {e}")
             return self._fallback_improvements(error_analysis)
+
+    def _extract_html_context_for_reflection(self, html: str) -> str:
+        """
+        从 HTML 中提取对反思有用的上下文
+
+        专注于可能包含目标数据的元素结构
+        """
+        if not html:
+            return "(无 HTML 内容)"
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        context_parts = []
+
+        # 1. 提取常见数据容器结构
+        container_patterns = [
+            'article', '.article', '.post', '.item', '.card',
+            '.news-item', '.product', 'tr', 'li'
+        ]
+        for pattern in container_patterns:
+            try:
+                elements = soup.select(pattern)[:2]
+                for elem in elements:
+                    prettified = elem.prettify()[:400]
+                    context_parts.append(f"数据容器 ({pattern}):\n{prettified}")
+            except:
+                pass
+
+        # 2. 提取标题元素
+        for tag in ['h1', 'h2', 'h3']:
+            elements = soup.find_all(tag)[:2]
+            for elem in elements:
+                context_parts.append(f"标题元素 ({tag}):\n{elem.prettify()[:200]}")
+
+        # 3. 提取链接模式
+        links = soup.select('a[href]')[:5]
+        for link in links:
+            href = link.get('href', '')
+            text = link.get_text(strip=True)[:50]
+            if text:
+                context_parts.append(f"链接: href='{href[:50]}' text='{text}'")
+
+        result = '\n\n'.join(context_parts[:12])
+        return result[:4000] if result else html[:1500]
 
     def _fallback_improvements(self, error_analysis: Dict) -> Dict:
         """降级改进建议"""

@@ -16,7 +16,7 @@ import logging
 logger = logging.getLogger('executor')
 
 
-# 危险模块和函数黑名单
+# 危险模块和函数黑名单（用于非容器模式的严格沙箱）
 DANGEROUS_MODULES: Set[str] = {
     'os', 'subprocess', 'sys', 'shutil', 'socket', 'requests',
     'urllib', 'http', 'ftplib', 'telnetlib', 'smtplib', 'poplib',
@@ -367,6 +367,161 @@ class DefaultSandbox:
 
         finally:
             # 清理临时文件
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
+class ContainerSandbox:
+    """
+    容器内沙箱 - 简化版
+
+    因为整个 Agent 已经在 Docker 容器中运行，
+    这里只需要基本的超时和资源控制，不需要严格的模块限制
+
+    设计理念：
+    - 预装常用库（parsel, lxml, bs4, pyquery, selectolax 等）
+    - LLM 可以自由选择工具
+    - 容器本身提供安全边界
+    """
+
+    def __init__(self, default_timeout: int = 60, max_timeout: int = 300):
+        """
+        初始化容器沙箱
+
+        Args:
+            default_timeout: 默认超时时间（秒）
+            max_timeout: 最大允许超时时间（秒）
+        """
+        self.default_timeout = default_timeout
+        self.max_timeout = min(max_timeout, 300)  # 最多 5 分钟
+
+    def execute(self, code: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+        """
+        在容器内执行代码（同步版本）
+
+        Args:
+            code: Python 代码
+            timeout: 超时时间（秒）
+
+        Returns:
+            执行结果字典
+        """
+        timeout = min(timeout or self.default_timeout, self.max_timeout)
+
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.py', delete=False, encoding='utf-8'
+        ) as f:
+            f.write(code)
+            temp_path = f.name
+
+        try:
+            result = subprocess.run(
+                [sys.executable, temp_path],
+                capture_output=True,
+                timeout=timeout,
+                cwd=os.getcwd()
+            )
+
+            return {
+                'success': result.returncode == 0,
+                'stdout': result.stdout.decode('utf-8', errors='replace'),
+                'stderr': result.stderr.decode('utf-8', errors='replace'),
+                'returncode': result.returncode
+            }
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"代码执行超时 ({timeout}s)")
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': f'Timeout after {timeout}s',
+                'returncode': -1,
+                'error': 'timeout'
+            }
+
+        except Exception as e:
+            logger.error(f"代码执行错误: {e}")
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': str(e),
+                'returncode': -1,
+                'error': 'execution_error'
+            }
+
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    async def execute_async(self, code: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+        """
+        在容器内执行代码（异步版本）
+
+        使用 asyncio.create_subprocess_exec 避免阻塞事件循环
+
+        Args:
+            code: Python 代码
+            timeout: 超时时间（秒）
+
+        Returns:
+            执行结果字典
+        """
+        timeout = min(timeout or self.default_timeout, self.max_timeout)
+
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.py', delete=False, encoding='utf-8'
+        ) as f:
+            f.write(code)
+            temp_path = f.name
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, temp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=os.getcwd()
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=timeout
+                )
+
+                return {
+                    'success': proc.returncode == 0,
+                    'stdout': stdout.decode('utf-8', errors='replace') if stdout else '',
+                    'stderr': stderr.decode('utf-8', errors='replace') if stderr else '',
+                    'returncode': proc.returncode
+                }
+
+            except asyncio.TimeoutError:
+                logger.warning(f"代码执行超时 ({timeout}s)")
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass
+
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': f'Timeout after {timeout}s',
+                    'returncode': -1,
+                    'error': 'timeout'
+                }
+
+        except Exception as e:
+            logger.error(f"代码执行错误: {e}")
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': str(e),
+                'returncode': -1,
+                'error': 'execution_error'
+            }
+
+        finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
 

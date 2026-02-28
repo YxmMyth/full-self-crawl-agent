@@ -2,6 +2,7 @@
 from .executor import (
     Executor,
     DefaultSandbox,
+    ContainerSandbox,
     DockerSandbox,
     CodeGenerator
 )
@@ -9,6 +10,7 @@ from .executor import (
 __all__ = [
     'Executor',
     'DefaultSandbox',
+    'ContainerSandbox',
     'DockerSandbox',
     'CodeGenerator'
 ]
