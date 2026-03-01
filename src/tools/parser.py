@@ -16,9 +16,9 @@ class HTMLParser:
     提供便捷的数据提取方法
     """
 
-    def __init__(self, html: str):
+    def __init__(self, html: str, base_url: str = ''):
         self.soup = BeautifulSoup(html, 'html.parser')
-        self.base_url = ''
+        self.base_url = base_url
 
     def set_base_url(self, url: str) -> None:
         """设置基准 URL（用于相对链接解析）"""
