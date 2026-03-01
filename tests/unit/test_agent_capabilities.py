@@ -29,6 +29,7 @@ def test_agent_pool_initialization():
     assert AgentCapability.JUDGE in capabilities
     assert AgentCapability.EXPLORE in capabilities
     assert AgentCapability.REFLECT in capabilities
+    assert AgentCapability.SPA_HANDLE in capabilities
 
 
 def test_sense_agent_description():

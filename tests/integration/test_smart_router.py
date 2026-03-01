@@ -109,6 +109,17 @@ def test_compose_capabilities_with_login():
     assert capabilities.index('handle_login') < capabilities.index('sense')
 
 
+def test_compose_capabilities_with_javascript():
+    """SPA/javascript 需求应注入 spa_handle（而非废弃的 handle_spa）"""
+    from src.core.smart_router import compose_capabilities
+
+    task = {'special_requirements': ['javascript']}
+    capabilities = compose_capabilities(task)
+
+    assert 'spa_handle' in capabilities
+    assert 'handle_spa' not in capabilities
+
+
 def test_progressive_explorer():
     """测试渐进式探索"""
     from src.core.smart_router import ProgressiveExplorer
