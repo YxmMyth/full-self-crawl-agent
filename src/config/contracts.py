@@ -54,7 +54,14 @@ class SpecContract(TypedDict, total=False):
 
     # ===== 能力需求 =====
     capabilities: List[str]
-    # ["sense", "plan", "act", "verify", "judge", "explore", "reflect"]
+    # ["sense", "plan", "act", "verify", "judge", "explore", "reflect", "spa_handle"]
+
+    # ===== 爬取模式（Issue #5 新增）=====
+    crawl_mode: str
+    # 支持：'single_page'（默认，向后兼容）| 'multi_page' | 'full_site'
+    max_pages: int   # 最大爬取页面数（multi_page/full_site 模式）
+    max_depth: int   # 最大爬取深度（multi_page/full_site 模式）
+    url_patterns: List[str]  # URL 路径白名单正则列表（可选）
 
 
 # ==================== State 契约 (IMPLEMENTATION.md 第1.2节) ====================
@@ -108,6 +115,12 @@ class StateContract(TypedDict, total=False):
     # ===== 历史 =====
     failure_history: List[Dict[str, Any]]
     evidence_collected: Dict[str, Any]
+
+    # ===== 爬取追踪（Issue #5 新增）=====
+    visited_urls: List[str]   # 已访问 URL 列表
+    queue_size: int           # 当前队列大小
+    pages_crawled: int        # 已爬取页面数量
+    per_url_results: Dict[str, Any]  # 每个 URL 的结果摘要
 
 
 # ==================== RoutingDecision 契约 (IMPLEMENTATION.md 第1.3节) ====================
@@ -234,7 +247,11 @@ class ContractFactory:
         completion_gate: Optional[List[str]] = None,
         max_execution_time: int = 300,
         max_retries: int = 3,
-        max_iterations: int = 10
+        max_iterations: int = 10,
+        crawl_mode: str = 'single_page',
+        max_pages: int = 1,
+        max_depth: int = 0,
+        url_patterns: Optional[List[str]] = None,
     ) -> SpecContract:
         """创建Spec契约"""
         if completion_gate is None:
@@ -261,7 +278,11 @@ class ContractFactory:
                 'required': ['spec.yaml', 'sense_report.json', 'generated_code.py'],
                 'optional': []
             },
-            'capabilities': ['sense', 'plan', 'act', 'verify']
+            'capabilities': ['sense', 'plan', 'act', 'verify'],
+            'crawl_mode': crawl_mode,
+            'max_pages': max_pages,
+            'max_depth': max_depth,
+            'url_patterns': url_patterns or [],
         }
 
         return spec
