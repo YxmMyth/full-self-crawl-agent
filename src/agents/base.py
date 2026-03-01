@@ -166,24 +166,54 @@ class SenseAgent(AgentInterface):
                 'anti_bot_detected': False
             }
 
-        # 1. 获取页面内容
+        # 1. 获取初始 HTML
         html = await browser.get_html()
-        screenshot = await browser.take_screenshot()
 
-        # 2. 程序快速分析（复用 FeatureDetector）
+        # 2. 用 FeatureDetector 做初步分析
         from src.core.smart_router import FeatureDetector
         detector = FeatureDetector()
-        features = detector.analyze(html)
+        quick_features = detector.analyze(html)
 
-        # 3. 分析页面结构
-        structure = self._analyze_structure(html)
-        features.update(structure)
+        # 3. 如果检测到 SPA，执行智能等待后重新获取 HTML 并重新分析
+        if quick_features.get('is_spa'):
+            html = await self._wait_for_spa_render(browser, html)
+            features = detector.analyze(html)
+        else:
+            features = quick_features
 
-        # 4. LLM 深度分析（如有 LLM 客户端）
+        # 4. 截图
+        screenshot = await browser.take_screenshot()
+
+        # 5. 从 features 的 container_info 中提取容器信息（不再调用 _analyze_structure）
+        container_info = features.get('container_info', {})
+        features['main_content_selector'] = container_info.get('container_selector')
+        features['item_selector'] = container_info.get('item_selector')
+        features['estimated_items'] = container_info.get('estimated_items', 0)
+
+        # 6. 集成 parser.py 的分页检测
+        try:
+            from src.tools.parser import HTMLParser
+            current_url = ''
+            if browser.page:
+                current_url = browser.page.url
+            parser = HTMLParser(html, current_url)
+            pagination_info = parser.detect_pagination()
+            features['pagination_type'] = self._determine_pagination_type(pagination_info, features)
+            features['pagination_next_url'] = pagination_info.get('next_url')
+            features['pagination_selector'] = None  # 由 ActAgent 动态发现
+        except Exception:
+            features['pagination_type'] = 'url' if features.get('has_pagination') else 'none'
+            features['pagination_next_url'] = None
+            features['pagination_selector'] = None
+
+        # 7. LLM 深度分析（如有 LLM 客户端）
         if llm_client:
             try:
                 deep_analysis = await self._llm_analyze(html, spec, llm_client)
-                features.update(deep_analysis)
+                # 只补充，不覆盖已有的核心字段
+                for key, value in deep_analysis.items():
+                    if key not in features or not features[key]:
+                        features[key] = value
             except Exception as e:
                 error_msg = str(e)
                 print(f"LLM 分析失败: {error_msg}")
@@ -194,7 +224,7 @@ class SenseAgent(AgentInterface):
                 if degradation_info.get('should_warn'):
                     print(f"警告: {degradation_info['message']}")
 
-        # 5. 检测反爬
+        # 8. 检测反爬
         anti_bot_info = self._detect_anti_bot(html)
 
         result = {
@@ -202,8 +232,8 @@ class SenseAgent(AgentInterface):
             'structure': features,
             'features': features,
             'anti_bot_detected': anti_bot_info.get('detected', False),
-            'anti_bot_info': anti_bot_info,  # 新增：详细反爬信息
-            'html_snapshot': html[:50000],  # 限制大小
+            'anti_bot_info': anti_bot_info,
+            'html_snapshot': html[:50000],
             'screenshot': screenshot
         }
 
@@ -219,68 +249,76 @@ class SenseAgent(AgentInterface):
 
         return result
 
-    def _analyze_structure(self, html: str) -> Dict[str, Any]:
-        """分析页面结构"""
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
+    async def _wait_for_spa_render(self, browser, initial_html: str, max_wait: float = 10.0) -> str:
+        """
+        SPA 智能等待 - 等待 JS 渲染完成
 
-        structure = {
-            'type': 'unknown',
-            'complexity': 'medium',
-            'has_dynamic_content': False,
-            'main_content_selector': None,
-            'pagination_type': 'none',
-            'pagination_selector': None,
-            'data_fields': [],
-            'estimated_items': 0
-        }
+        策略：
+        1. 等待 networkidle
+        2. 轮询 DOM 变化，直到稳定（连续 2 次变化 < 100 字符）
+        3. 返回渲染后的完整 HTML
+        """
+        import asyncio
 
-        # 检测页面类型
-        # 列表页特征
-        list_indicators = ['<ul', '<ol', '<table', 'class="list"', 'class="item"', 'class="article']
-        article_indicators = ['<article', 'class="article"', 'class="post"', 'class="news']
+        # 第一步：等待 networkidle
+        try:
+            await browser.page.wait_for_load_state('networkidle', timeout=8000)
+        except Exception:
+            pass
 
-        list_count = sum(1 for ind in list_indicators if ind in html.lower())
-        article_count = sum(1 for ind in article_indicators if ind in html.lower())
+        # 第二步：轮询 DOM 变化，直到稳定
+        # DOM_STABILITY_THRESHOLD: 认为 DOM 稳定的最大字符变化量
+        DOM_STABILITY_THRESHOLD = 100
+        # STABLE_CHECK_COUNT: 需要连续几次稳定才认为渲染完成
+        STABLE_CHECK_COUNT = 2
+        stable_count = 0
+        prev_html = initial_html
+        elapsed = 0.0
+        interval = 0.5
 
-        if list_count > 2:
-            structure['type'] = 'list'
-        elif article_count > 0:
-            structure['type'] = 'detail'
-        elif '<form' in html.lower():
-            structure['type'] = 'form'
-        else:
-            structure['type'] = 'other'
-
-        # 检测分页类型
-        if 'page=' in html.lower() or '/page/' in html.lower():
-            structure['pagination_type'] = 'url'
-        elif 'next' in html.lower() and ('<a' in html.lower() or '<button' in html.lower()):
-            structure['pagination_type'] = 'click'
-        elif 'scroll' in html.lower() or 'load-more' in html.lower():
-            structure['pagination_type'] = 'scroll'
-
-        # 查找分页选择器
-        next_selectors = ['a.next', '.next-page', '.pagination a:last-child', '[rel="next"]']
-        for selector in next_selectors:
-            if soup.select_one(selector):
-                structure['pagination_selector'] = selector
+        while elapsed < max_wait:
+            await asyncio.sleep(interval)
+            elapsed += interval
+            try:
+                current_html = await browser.get_html()
+            except Exception:
                 break
+            if abs(len(current_html) - len(prev_html)) < DOM_STABILITY_THRESHOLD:
+                stable_count += 1
+                if stable_count >= STABLE_CHECK_COUNT:
+                    return current_html
+            else:
+                stable_count = 0
+            prev_html = current_html
 
-        # 估算数据项数量
-        common_containers = ['.article', '.item', '.post', '.news-item', 'article', 'tr']
-        for container in common_containers:
-            items = soup.select(container)
-            if len(items) > 3:
-                structure['estimated_items'] = len(items)
-                structure['main_content_selector'] = container
-                break
+        # 超时后返回最后获取的 HTML
+        try:
+            return await browser.get_html()
+        except Exception:
+            return prev_html
 
-        return structure
+    def _determine_pagination_type(self, pagination_info: Dict, features: Dict) -> str:
+        """根据 parser 的分页检测结果 + FeatureDetector 的结果确定分页类型"""
+        if pagination_info.get('next_url'):
+            return 'url'
+        if pagination_info.get('has_next'):
+            return 'click'
+        if features.get('has_pagination'):
+            return 'url'  # FeatureDetector 检测到分页但 parser 没有具体 URL
+        return 'none'
 
     async def _llm_analyze(self, html: str, spec: Any, llm_client) -> Dict:
         """使用 LLM 增强分析 - 推理任务，使用 DeepSeek"""
         goal = spec.get('goal', '未知') if spec else '未知'
+
+        # 提取 <body> 内容，避免 <head> 占用过多字符
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            body = soup.find('body')
+            html_snippet = str(body)[:5000] if body else html[:5000]
+        except Exception:
+            html_snippet = html[:5000]
 
         prompt = f"""分析以下 HTML 页面，提取关键信息：
 
@@ -288,7 +326,7 @@ class SenseAgent(AgentInterface):
 
 HTML 片段：
 ```
-{html[:3000]}
+{html_snippet}
 ```
 
 请输出 JSON 格式：
