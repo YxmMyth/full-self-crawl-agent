@@ -1464,72 +1464,60 @@ class ActAgent(AgentInterface):
     async def _handle_pagination(self, browser, initial_data, strategy, selectors,
                                   metrics: Optional[ExtractionMetrics] = None,
                                   required_fields: Optional[set] = None):
-        """处理分页（改进版：支持去重和滚动检测）"""
-        all_data = initial_data.copy()
-        max_pages = strategy.get('max_pages', 5)
-        pagination_type = strategy.get('pagination_strategy', 'click')
-        next_selector = strategy.get('pagination_selector', 'a.next')
+        """处理分页（三层策略：click / scroll / url，含 URL 去重）"""
+        pagination_type = strategy.get('pagination_strategy', 'none')
+        if pagination_type == 'none':
+            return initial_data
 
-        # 用于去重 - 使用关键字段组合
-        def get_item_key(item: Dict) -> str:
-            """生成唯一键用于去重"""
-            # 使用所有非空值组合作为键
-            key_parts = [f"{k}:{v}" for k, v in sorted(item.items()) if v]
-            return "|".join(key_parts) if key_parts else str(id(item))
+        max_pages = strategy.get('max_pages', 10)
+        all_data = list(initial_data)
+
+        def get_item_key(item):
+            values = [str(v) for v in item.values() if v]
+            return '|'.join(sorted(values))
 
         seen_keys = {get_item_key(item) for item in all_data}
-        required_fields = required_fields or set()
+        visited_urls = set()
+        current_url = await browser.get_current_url()
+        visited_urls.add(current_url)
 
         for page_num in range(max_pages - 1):
             try:
                 prev_data_count = len(all_data)
 
                 if pagination_type == 'click':
-                    next_btn = await browser.page.query_selector(next_selector)
-                    if next_btn:
-                        await next_btn.click()
-                        await browser.page.wait_for_load_state('networkidle')
-                        await browser.page.wait_for_timeout(1000)  # 等待内容加载
-                    else:
+                    success = await self._paginate_by_click(browser)
+                    if not success:
                         break
+
                 elif pagination_type == 'scroll':
-                    # 滚动前记录位置
-                    prev_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
-
-                    await browser.scroll_to_bottom()
-                    await browser.page.wait_for_timeout(1000)
-
-                    # 检测是否到底（滚动后高度没变化）
-                    new_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
-                    if new_scroll_height == prev_scroll_height:
-                        print("已到达页面底部")
+                    reached_bottom = await self._paginate_by_scroll(browser)
+                    if reached_bottom:
                         break
 
                 elif pagination_type == 'url':
-                    # URL 分页逻辑
                     current_url = await browser.get_current_url()
-                    next_url = self._get_next_page_url(current_url, page_num + 2)
-                    if next_url:
-                        await browser.navigate(next_url)
-                    else:
+                    next_url = await self._resolve_next_page_url(browser, current_url, page_num + 2)
+                    if not next_url or next_url in visited_urls:
                         break
+                    visited_urls.add(next_url)
+                    await browser.navigate(next_url)
 
                 # 提取新数据
-                html = await browser.get_html()
                 new_data = await self._extract_with_selectors(
                     browser, selectors, strategy, metrics, required_fields
                 )
 
                 # 去重添加
+                new_count = 0
                 for item in new_data:
                     item_key = get_item_key(item)
                     if item_key not in seen_keys:
                         all_data.append(item)
                         seen_keys.add(item_key)
+                        new_count += 1
 
-                # 如果没有新数据，可能已到底
-                if len(all_data) == prev_data_count:
-                    print(f"分页第 {page_num + 2} 页无新数据，停止翻页")
+                if new_count == 0:
                     break
 
             except Exception as e:
@@ -1538,42 +1526,218 @@ class ActAgent(AgentInterface):
 
         return all_data
 
-    def _get_next_page_url(self, current_url: str, next_page: int) -> Optional[str]:
-        """
-        生成下一页 URL
+    async def _paginate_by_click(self, browser) -> bool:
+        """点击分页 — 按语义优先级查找"下一页"按钮，返回 True 表示成功"""
+        page = browser.page
 
-        支持:
-        - ?page=N 格式
-        - /page/N 格式
-        - /N 格式
-        """
+        next_selectors = [
+            'a[rel="next"]',
+            'link[rel="next"]',
+            '[aria-label*="next" i]',
+            '[aria-label*="下一页"]',
+            '.pagination .next a',
+            '.pagination li:last-child a',
+            '.pager .next a',
+            'nav[aria-label*="page"] a:last-child',
+            'a.next',
+            'button.next',
+            '.next-page',
+            '.next a',
+        ]
+
+        for selector in next_selectors:
+            try:
+                elem = await page.query_selector(selector)
+                if elem and await elem.is_visible():
+                    await elem.click()
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                    await page.wait_for_timeout(500)
+                    return True
+            except Exception:
+                continue
+
+        # 最后手段：文本匹配
+        text_patterns = ['下一页', 'Next', 'Next Page', '»', '›', '>>', '下一頁']
+        for text in text_patterns:
+            try:
+                locator = page.locator(f'a:has-text("{text}"), button:has-text("{text}")')
+                if await locator.count() > 0:
+                    await locator.first.click()
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                    await page.wait_for_timeout(500)
+                    return True
+            except Exception:
+                continue
+
+        return False
+
+    async def _paginate_by_scroll(self, browser) -> bool:
+        """滚动分页 - 返回 True 表示已到底"""
+        page = browser.page
+        prev_height = await page.evaluate('document.body.scrollHeight')
+        await browser.scroll_to_bottom()
+        await page.wait_for_timeout(1500)
+        new_height = await page.evaluate('document.body.scrollHeight')
+        return new_height == prev_height
+
+    async def _resolve_next_page_url(self, browser, current_url: str, next_page: int) -> Optional[str]:
+        """三层策略解析下一页 URL"""
+        # 策略 1: 从 DOM 提取真实的 next URL
+        dom_next_url = await self._extract_next_url_from_dom(browser)
+        if dom_next_url:
+            return dom_next_url
+
+        # 策略 2: 从当前 URL 推断
+        inferred_url = self._infer_next_page_url(current_url, next_page)
+        if inferred_url:
+            return inferred_url
+
+        # 策略 3: 从页面链接中发现分页模式
+        pattern_url = await self._discover_pagination_pattern(browser, current_url, next_page)
+        return pattern_url
+
+    async def _extract_next_url_from_dom(self, browser) -> Optional[str]:
+        """从 DOM 中通过语义标签提取下一页 URL"""
+        from urllib.parse import urljoin
+
+        page = browser.page
+        current_url = await browser.get_current_url()
+
+        # 按优先级尝试选择器
+        dom_selectors = [
+            'a[rel="next"]',
+            '.pagination .next a',
+            '.pager .next a',
+            'a.next-page',
+            'li.next a',
+        ]
+        for selector in dom_selectors:
+            try:
+                elem = await page.query_selector(selector)
+                if elem:
+                    href = await elem.get_attribute('href')
+                    if href and href not in ('#', 'javascript:void(0)', ''):
+                        return urljoin(current_url, href)
+            except Exception:
+                continue
+
+        # 文本匹配
+        text_patterns = ['下一页', 'Next', 'Next Page', '»', '›', '下一頁']
+        for text in text_patterns:
+            try:
+                locator = page.locator(f'a:has-text("{text}")')
+                if await locator.count() > 0:
+                    href = await locator.first.get_attribute('href')
+                    if href and href not in ('#', 'javascript:void(0)', ''):
+                        return urljoin(current_url, href)
+            except Exception:
+                continue
+
+        return None
+
+    def _infer_next_page_url(self, current_url: str, next_page: int) -> Optional[str]:
+        """从当前 URL 推断下一页 URL，支持 10+ 种格式"""
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
         parsed = urlparse(current_url)
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
 
-        # 尝试 ?page=N 格式
-        query_params = parse_qs(parsed.query)
-        if 'page' in query_params:
-            query_params['page'] = [str(next_page)]
-            new_query = urlencode(query_params, doseq=True)
-            return urlunparse(parsed._replace(query=new_query))
+        # Query 参数分页（按常见度排序）
+        page_params = ['page', 'p', 'pageNum', 'pagenum', 'pn', 'pg', 'current', 'pageNo', 'pageno']
+        for param in page_params:
+            if param in query_params:
+                query_params[param] = [str(next_page)]
+                new_query = urlencode(query_params, doseq=True)
+                return urlunparse(parsed._replace(query=new_query))
 
-        # 尝试 /page/N 或 /N 格式
+        # 偏移量参数
+        offset_params = ['offset', 'start', 'from', 'skip', 'begin']
+        for param in offset_params:
+            if param in query_params:
+                try:
+                    current_offset = int(query_params[param][0])
+                    page_size = self._guess_page_size(query_params)
+                    new_offset = (next_page - 1) * page_size
+                    query_params[param] = [str(new_offset)]
+                    new_query = urlencode(query_params, doseq=True)
+                    return urlunparse(parsed._replace(query=new_query))
+                except (ValueError, IndexError):
+                    continue
+
+        # 路径分页: /page/N 或 /p/N
+        import re
+        for path_pattern, replacement in [
+            (r'/page/(\d+)', f'/page/{next_page}'),
+            (r'/p/(\d+)', f'/p/{next_page}'),
+        ]:
+            if re.search(path_pattern, parsed.path):
+                new_path = re.sub(path_pattern, replacement, parsed.path)
+                return urlunparse(parsed._replace(path=new_path))
+
+        # 路径末尾数字（谨慎：数字 < 1000 且路径段 >= 2）
         path_parts = parsed.path.rstrip('/').split('/')
-        if path_parts and path_parts[-1].isdigit():
-            # 替换最后的数字
+        if len(path_parts) >= 2 and path_parts[-1].isdigit() and int(path_parts[-1]) < 1000:
             path_parts[-1] = str(next_page)
             new_path = '/'.join(path_parts)
             return urlunparse(parsed._replace(path=new_path))
 
-        # 尝试添加 /page/N
-        if 'page' in parsed.path.lower():
-            # 已有 page，替换数字
-            import re
-            new_path = re.sub(r'/page/\d+', f'/page/{next_page}', parsed.path)
-            return urlunparse(parsed._replace(path=new_path))
-
         return None
+
+    def _guess_page_size(self, query_params: dict) -> int:
+        """从 URL 参数中猜测每页大小，默认 20"""
+        size_params = ['size', 'limit', 'pageSize', 'pagesize', 'count', 'per_page', 'perPage', 'num']
+        for param in size_params:
+            if param in query_params:
+                try:
+                    return int(query_params[param][0])
+                except (ValueError, IndexError):
+                    continue
+        return 20
+
+    async def _discover_pagination_pattern(self, browser, current_url: str, next_page: int) -> Optional[str]:
+        """从页面链接中发现分页模式"""
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        page = browser.page
+        try:
+            hrefs = await page.evaluate(
+                'Array.from(document.querySelectorAll("a[href]")).map(a => a.href)'
+            )
+        except Exception:
+            return None
+
+        parsed_current = urlparse(current_url)
+        param_counts: Dict[str, List[int]] = {}
+
+        for href in hrefs:
+            try:
+                parsed = urlparse(href)
+                # 同路径但参数不同
+                if parsed.scheme != parsed_current.scheme or parsed.netloc != parsed_current.netloc:
+                    continue
+                if parsed.path != parsed_current.path:
+                    continue
+                link_params = parse_qs(parsed.query)
+                current_params = parse_qs(parsed_current.query)
+                for param, values in link_params.items():
+                    if values and values[0].isdigit():
+                        curr_vals = current_params.get(param, [])
+                        if not curr_vals or curr_vals[0] != values[0]:
+                            if param not in param_counts:
+                                param_counts[param] = []
+                            param_counts[param].append(int(values[0]))
+            except Exception:
+                continue
+
+        if not param_counts:
+            return None
+
+        # 选出出现最多的分页参数
+        best_param = max(param_counts, key=lambda k: len(param_counts[k]))
+        current_params = parse_qs(parsed_current.query, keep_blank_values=True)
+        current_params[best_param] = [str(next_page)]
+        new_query = urlencode(current_params, doseq=True)
+        return urlunparse(parsed_current._replace(query=new_query))
 
     def get_description(self) -> str:
         return "执行实际的数据提取操作"
