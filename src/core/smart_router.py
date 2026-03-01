@@ -13,6 +13,17 @@ from datetime import datetime
 import re
 import json
 
+try:
+    from bs4 import BeautifulSoup, Tag
+    _BS4_AVAILABLE = True
+except ImportError:
+    _BS4_AVAILABLE = False
+
+# -- FeatureDetector 调优常量 --
+_SPA_BODY_TEXT_THRESHOLD = 200          # body 文本少于此值时认为是薄内容（SPA 信号）
+_DETAIL_PARAGRAPH_THRESHOLD = 200       # 单个 <p> 超过此字数认为是长文本详情页
+_CONTAINER_SIMILARITY_THRESHOLD = 0.6  # 重复容器子结构相似度阈值
+
 
 # ==================== 特征检测器 ====================
 
@@ -30,16 +41,22 @@ class FeatureDetector:
         - anti_bot_level: 反爬等级
         - page_type: 页面类型
         - complexity: 复杂度评级
+        - container_info: 重复容器检测结果（新增）
         """
+        soup = BeautifulSoup(html, 'html.parser') if _BS4_AVAILABLE else None
+
         features = {
             'has_login': self._detect_login_form(html),
-            'has_pagination': self._detect_pagination(html),
-            'is_spa': self._detect_spa(html),
+            'has_pagination': self._detect_pagination(soup, html),
+            'is_spa': self._detect_spa(soup, html),
             'anti_bot_level': self._detect_anti_bot(html),
         }
 
-        # 分析页面类型和复杂度
-        features['page_type'] = self._classify_page_type(features)
+        # 新增：重复容器检测
+        features['container_info'] = self._detect_repeating_containers(soup, html)
+
+        # 统一页面类型分类（新增），同时保留 page_type 字段
+        features['page_type'] = self._classify_page_type_unified(features, soup, html)
         features['complexity'] = self._assess_complexity(features)
 
         return features
@@ -55,23 +72,69 @@ class FeatureDetector:
                 return True
         return False
 
-    def _detect_pagination(self, html: str) -> bool:
-        """检测是否有分页"""
-        pagination_patterns = [
-            r'page=\d+',
-            r'下一页|next\s*page',
-            r'pagination|分页',
-        ]
-        for pattern in pagination_patterns:
-            if re.search(pattern, html, re.IGNORECASE):
+    def _detect_pagination(self, soup: Any, html: str) -> bool:
+        """检测是否有分页（重写版：rel="next"优先 + 容器 + 链接模式 + 精确文本）"""
+        # 信号1：rel="next" 链接（最可靠）
+        if soup is not None:
+            if soup.find('a', rel=lambda r: r and 'next' in r):
                 return True
+            if soup.find('link', rel=lambda r: r and 'next' in r):
+                return True
+
+        # 信号2：分页容器（class/id 含 pagination/pager/pages）
+        if re.search(
+            r'class=["\'][^"\']*\b(pagination|pager|pages)\b[^"\']*["\']|'
+            r'id=["\'][^"\']*\b(pagination|pager|pages)\b[^"\']*["\']',
+            html, re.IGNORECASE
+        ):
+            return True
+
+        # 信号3：URL 分页模式
+        if re.search(r'(?:href|action)[^>]*[?&/]page[=/]\d+', html, re.IGNORECASE):
+            return True
+
+        # 信号4：精确文字（避免误判 "next generation" 等短语）
+        if re.search(r'\b(下一页|上一页|next\s+page|prev(?:ious)?\s+page)\b', html, re.IGNORECASE):
+            return True
+
         return False
 
-    def _detect_spa(self, html: str) -> bool:
-        """检测是否是SPA"""
-        spa_indicators = ['fetch(', 'XMLHttpRequest', 'div id="app"', 'div id="root"']
-        lower_html = html.lower()
-        return any(indicator.lower() in lower_html for indicator in spa_indicators)
+    def _detect_spa(self, soup: Any, html: str) -> bool:
+        """检测是否是SPA（重写版：body内容薄 + 框架标记 + JS bundle数量三信号）"""
+        score = 0
+
+        # 信号1：body 内容薄（body 文本极少，说明依赖 JS 渲染）
+        if soup is not None:
+            body = soup.find('body')
+            if body:
+                body_text = body.get_text(separator=' ', strip=True)
+                if len(body_text) < _SPA_BODY_TEXT_THRESHOLD:
+                    score += 1
+
+        # 信号2：框架挂载点标记
+        framework_patterns = [
+            r'<div[^>]+id=["\']app["\']',
+            r'<div[^>]+id=["\']root["\']',
+            r'<div[^>]+id=["\']__next["\']',
+            r'data-reactroot',
+            r'ng-version=',
+            r'data-v-\w+',           # Vue scoped attribute
+            r'__vue_app__',
+            r'__NEXT_DATA__',
+            r'window\.__NUXT__',
+        ]
+        if any(re.search(p, html, re.IGNORECASE) for p in framework_patterns):
+            score += 1
+
+        # 信号3：多个 JS bundle（chunk/bundle 文件 ≥2）
+        js_bundles = re.findall(
+            r'<script[^>]+src=["\'][^"\']*(?:chunk|bundle|vendor|main|app)[^"\']*\.js[^"\']*["\']',
+            html, re.IGNORECASE
+        )
+        if len(js_bundles) >= 2:
+            score += 1
+
+        return score >= 2
 
     def _detect_anti_bot(self, html: str) -> str:
         """检测反爬等级"""
@@ -82,8 +145,154 @@ class FeatureDetector:
             return 'medium'
         return 'none'
 
+    # ------------------------------------------------------------------
+    # 新增方法
+    # ------------------------------------------------------------------
+
+    def _clean_class_name(self, class_name: str) -> str:
+        """去掉 CSS Modules / Tailwind hash 后缀（如 _abc123、--xYzQ）。
+
+        仅去掉包含数字的 hash 后缀（≥4 位），避免误删 _main 之类的有意义后缀。
+        """
+        # 匹配形如 _<hash> 或 --<hash> 的后缀，要求包含至少一个数字
+        cleaned = re.sub(r'[_-]{1,2}(?=[a-zA-Z0-9]*\d)[a-zA-Z0-9]{4,}$', '', class_name)
+        return cleaned.strip()
+
+    def _compute_structure_similarity(self, elem_a: Any, elem_b: Any) -> float:
+        """
+        计算两个元素的子标签序列相似度。
+
+        算法：位置敏感的标签序列匹配，以两序列最大长度归一化。
+        纯文本叶节点（无子标签）返回 0.0，不视为结构相似。
+        """
+        if not _BS4_AVAILABLE or elem_a is None or elem_b is None:
+            return 0.0
+
+        def child_tags(elem: Any) -> List[str]:
+            return [c.name for c in elem.children if hasattr(c, 'name') and c.name]
+
+        tags_a = child_tags(elem_a)
+        tags_b = child_tags(elem_b)
+
+        # 纯文本叶节点（无子标签）不构成结构相似的证据
+        if not tags_a and not tags_b:
+            return 0.0
+        if not tags_a or not tags_b:
+            return 0.0
+
+        # 使用长度归一化的匹配度（顺序敏感）
+        matches = sum(1 for a, b in zip(tags_a, tags_b) if a == b)
+        similarity = matches / max(len(tags_a), len(tags_b))
+        return similarity
+
+    def _is_detail_page(self, soup: Any, html: str) -> bool:
+        """判断是否是详情页（article 标签 / 长文本段落 / h1+p 结构）"""
+        if soup is None:
+            return False
+
+        # 信号1：存在 <article> 标签
+        if soup.find('article'):
+            return True
+
+        # 信号2：单个 <h1> 且后面有较多 <p>
+        h1_tags = soup.find_all('h1')
+        if len(h1_tags) == 1:
+            p_tags = soup.find_all('p')
+            if len(p_tags) >= 3:
+                return True
+
+        # 信号3：body 中有长文本段落（单个 p 超过 200 字）
+        for p in soup.find_all('p'):
+            if len(p.get_text(strip=True)) > _DETAIL_PARAGRAPH_THRESHOLD:
+                return True
+
+        return False
+
+    def _detect_repeating_containers(self, soup: Any, html: str) -> Dict[str, Any]:
+        """
+        检测重复结构容器（列表页识别），不依赖 class 名。
+
+        返回 container_info 字典：
+        - found: bool
+        - tag: str（容器标签）
+        - count: int（重复数量）
+        - similarity: float（结构相似度）
+        """
+        empty = {'found': False, 'tag': None, 'count': 0, 'similarity': 0.0}
+        if not _BS4_AVAILABLE or soup is None:
+            return empty
+
+        # 候选容器标签（语义化优先）
+        candidate_tags = ['ul', 'ol', 'table', 'div', 'section', 'article']
+
+        for tag_name in candidate_tags:
+            containers = soup.find_all(tag_name)
+
+            # 找到子元素数量足够的容器
+            for container in containers:
+                direct_children = [c for c in container.children
+                                   if hasattr(c, 'name') and c.name]
+                if len(direct_children) < 3:
+                    continue
+
+                # 取前几个子元素，判断彼此结构相似度
+                samples = direct_children[:min(5, len(direct_children))]
+                if len(samples) < 2:
+                    continue
+
+                similarities = []
+                for i in range(len(samples) - 1):
+                    sim = self._compute_structure_similarity(samples[i], samples[i + 1])
+                    similarities.append(sim)
+
+                avg_sim = sum(similarities) / len(similarities) if similarities else 0.0
+                if avg_sim >= _CONTAINER_SIMILARITY_THRESHOLD:
+                    return {
+                        'found': True,
+                        'tag': tag_name,
+                        'count': len(direct_children),
+                        'similarity': round(avg_sim, 3),
+                    }
+
+        return empty
+
+    def _classify_page_type_unified(
+        self,
+        features: Dict[str, Any],
+        soup: Any,
+        html: str,
+    ) -> str:
+        """
+        统一页面类型分类，输出 list|detail|form|spa|interactive|other
+        （取代旧的 _classify_page_type）
+        """
+        if features.get('is_spa'):
+            return 'spa'
+
+        if features.get('has_login'):
+            return 'form'
+
+        container_info = features.get('container_info', {})
+        if container_info.get('found'):
+            return 'list'
+
+        if self._is_detail_page(soup, html):
+            return 'detail'
+
+        # 检测表单页（有 <form> 且无登录特征）
+        if soup is not None and soup.find('form'):
+            return 'form'
+        elif re.search(r'<form\b', html, re.IGNORECASE):
+            return 'form'
+
+        return 'other'
+
+    # ------------------------------------------------------------------
+    # 保留旧方法（兼容调用方）
+    # ------------------------------------------------------------------
+
     def _classify_page_type(self, features: Dict[str, Any]) -> str:
-        """分类页面类型"""
+        """分类页面类型（旧版，保留兼容）"""
         if features.get('is_spa'):
             return 'spa'
         elif features.get('has_login'):
