@@ -163,47 +163,90 @@ class SenseAgent(AgentInterface):
                 'error': 'Browser not available',
                 'structure': {},
                 'features': {},
-                'anti_bot_detected': False
+                'anti_bot_detected': False,
+                'anti_bot_info': {'detected': False},
+                'html_snapshot': '',
+                'screenshot': None
             }
 
         # 1. 获取页面内容
         html = await browser.get_html()
         screenshot = await browser.take_screenshot()
 
-        # 2. 程序快速分析（复用 FeatureDetector）
+        # 2. 程序快速分析（FeatureDetector v2 为单一真相来源）
         from src.core.smart_router import FeatureDetector
         detector = FeatureDetector()
-        features = detector.analyze(html)
+        quick_features = detector.analyze(html)
 
-        # 3. 分析页面结构
-        structure = self._analyze_structure(html)
-        features.update(structure)
+        # 3. SPA 智能等待：检测到 SPA 则等待 JS 渲染后重新分析
+        if quick_features.get('is_spa') and hasattr(browser, 'page') and browser.page:
+            html = await self._wait_for_spa_render(browser)
+            quick_features = detector.analyze(html)
 
-        # 4. LLM 深度分析（如有 LLM 客户端）
+        # 4. 从 container_info 提取选择器和估算数量
+        container_info = quick_features.get('container_info', {})
+        main_content_selector = None
+        item_selector = None
+        estimated_items = 0
+        if container_info.get('found'):
+            tag = container_info.get('tag', 'div')
+            main_content_selector = tag
+            estimated_items = container_info.get('count', 0)
+
+        # 5. 集成 parser 分页检测
+        from src.tools.parser import HTMLParser
+        current_url = ''
+        if hasattr(browser, 'get_current_url'):
+            try:
+                current_url = await browser.get_current_url()
+            except Exception:
+                pass
+        parser = HTMLParser(html, base_url=current_url)
+        pagination_info = parser.detect_pagination()
+        pagination_type = self._determine_pagination_type(pagination_info, quick_features)
+
+        # 6. 构建统一的 structure（page_type 为规范字段，无 type 字段）
+        structure = {
+            'page_type': quick_features.get('page_type', 'other'),
+            'complexity': quick_features.get('complexity', 'medium'),
+            'has_dynamic_content': quick_features.get('is_spa', False),
+            'main_content_selector': main_content_selector,
+            'item_selector': item_selector,
+            'pagination_type': pagination_type,
+            'pagination_next_url': pagination_info.get('next_url'),
+            'pagination_selector': None,
+            'data_fields': [],
+            'estimated_items': estimated_items,
+        }
+
+        features = dict(quick_features)
+
+        # 7. LLM 深度分析（补充核心字段，不覆盖）
         if llm_client:
             try:
                 deep_analysis = await self._llm_analyze(html, spec, llm_client)
-                features.update(deep_analysis)
+                for key, value in deep_analysis.items():
+                    if key not in structure or not structure[key]:
+                        structure[key] = value
             except Exception as e:
                 error_msg = str(e)
                 print(f"LLM 分析失败: {error_msg}")
-                # 记录降级
                 degradation_info = self.degradation_tracker.record_degradation(
                     self.name, 'llm_analyze', error_msg
                 )
                 if degradation_info.get('should_warn'):
                     print(f"警告: {degradation_info['message']}")
 
-        # 5. 检测反爬
+        # 8. 检测反爬
         anti_bot_info = self._detect_anti_bot(html)
 
         result = {
             'success': True,
-            'structure': features,
+            'structure': structure,
             'features': features,
             'anti_bot_detected': anti_bot_info.get('detected', False),
-            'anti_bot_info': anti_bot_info,  # 新增：详细反爬信息
-            'html_snapshot': html[:50000],  # 限制大小
+            'anti_bot_info': anti_bot_info,
+            'html_snapshot': html[:50000],
             'screenshot': screenshot
         }
 
@@ -219,68 +262,60 @@ class SenseAgent(AgentInterface):
 
         return result
 
-    def _analyze_structure(self, html: str) -> Dict[str, Any]:
-        """分析页面结构"""
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
+    async def _wait_for_spa_render(self, browser, max_wait: float = 10.0) -> str:
+        """等待 SPA 渲染完成：networkidle 等待 + DOM 稳定性轮询"""
+        import asyncio
 
-        structure = {
-            'type': 'unknown',
-            'complexity': 'medium',
-            'has_dynamic_content': False,
-            'main_content_selector': None,
-            'pagination_type': 'none',
-            'pagination_selector': None,
-            'data_fields': [],
-            'estimated_items': 0
-        }
+        # Step 1: 等待网络空闲
+        try:
+            await browser.page.wait_for_load_state('networkidle', timeout=8000)
+        except Exception:
+            pass
 
-        # 检测页面类型
-        # 列表页特征
-        list_indicators = ['<ul', '<ol', '<table', 'class="list"', 'class="item"', 'class="article']
-        article_indicators = ['<article', 'class="article"', 'class="post"', 'class="news']
+        # Step 2: 轮询 DOM 稳定性（连续 2 次变化 < 100 字符则认为稳定）
+        prev_html = await browser.get_html()
+        stable_count = 0
+        elapsed = 0.0
 
-        list_count = sum(1 for ind in list_indicators if ind in html.lower())
-        article_count = sum(1 for ind in article_indicators if ind in html.lower())
+        while elapsed < max_wait:
+            await asyncio.sleep(0.5)
+            elapsed += 0.5
+            curr_html = await browser.get_html()
 
-        if list_count > 2:
-            structure['type'] = 'list'
-        elif article_count > 0:
-            structure['type'] = 'detail'
-        elif '<form' in html.lower():
-            structure['type'] = 'form'
-        else:
-            structure['type'] = 'other'
+            if abs(len(curr_html) - len(prev_html)) < 100:
+                stable_count += 1
+                if stable_count >= 2:
+                    return curr_html
+            else:
+                stable_count = 0
 
-        # 检测分页类型
-        if 'page=' in html.lower() or '/page/' in html.lower():
-            structure['pagination_type'] = 'url'
-        elif 'next' in html.lower() and ('<a' in html.lower() or '<button' in html.lower()):
-            structure['pagination_type'] = 'click'
-        elif 'scroll' in html.lower() or 'load-more' in html.lower():
-            structure['pagination_type'] = 'scroll'
+            prev_html = curr_html
 
-        # 查找分页选择器
-        next_selectors = ['a.next', '.next-page', '.pagination a:last-child', '[rel="next"]']
-        for selector in next_selectors:
-            if soup.select_one(selector):
-                structure['pagination_selector'] = selector
-                break
+        return await browser.get_html()
 
-        # 估算数据项数量
-        common_containers = ['.article', '.item', '.post', '.news-item', 'article', 'tr']
-        for container in common_containers:
-            items = soup.select(container)
-            if len(items) > 3:
-                structure['estimated_items'] = len(items)
-                structure['main_content_selector'] = container
-                break
-
-        return structure
+    def _determine_pagination_type(self, parser_result: Dict, features: Dict) -> str:
+        """合并 parser 分页检测和 FeatureDetector 结果，返回统一的分页类型字符串"""
+        if parser_result.get('next_url'):
+            return 'click'
+        if parser_result.get('has_next'):
+            return 'click'
+        if features.get('has_pagination'):
+            return 'url'
+        return 'none'
 
     async def _llm_analyze(self, html: str, spec: Any, llm_client) -> Dict:
         """使用 LLM 增强分析 - 推理任务，使用 DeepSeek"""
+        from bs4 import BeautifulSoup
+
         goal = spec.get('goal', '未知') if spec else '未知'
+
+        # 提取 <body> 内容（最多 5000 字符），降级为 html[:5000]
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            body = soup.find('body')
+            html_snippet = str(body)[:5000] if body else html[:5000]
+        except Exception:
+            html_snippet = html[:5000]
 
         prompt = f"""分析以下 HTML 页面，提取关键信息：
 
@@ -288,7 +323,7 @@ class SenseAgent(AgentInterface):
 
 HTML 片段：
 ```
-{html[:3000]}
+{html_snippet}
 ```
 
 请输出 JSON 格式：
@@ -1464,58 +1499,84 @@ class ActAgent(AgentInterface):
     async def _handle_pagination(self, browser, initial_data, strategy, selectors,
                                   metrics: Optional[ExtractionMetrics] = None,
                                   required_fields: Optional[set] = None):
-        """处理分页（改进版：支持去重和滚动检测）"""
+        """处理分页（语义化 click 检测 + 鲁棒 URL 推断 + 访问去重）"""
         all_data = initial_data.copy()
         max_pages = strategy.get('max_pages', 5)
         pagination_type = strategy.get('pagination_strategy', 'click')
-        next_selector = strategy.get('pagination_selector', 'a.next')
+        configured_selector = strategy.get('pagination_selector', '')
 
-        # 用于去重 - 使用关键字段组合
+        # 用于去重
         def get_item_key(item: Dict) -> str:
-            """生成唯一键用于去重"""
-            # 使用所有非空值组合作为键
             key_parts = [f"{k}:{v}" for k, v in sorted(item.items()) if v]
             return "|".join(key_parts) if key_parts else str(id(item))
 
         seen_keys = {get_item_key(item) for item in all_data}
         required_fields = required_fields or set()
 
+        # 已访问 URL 集合（防止循环）
+        current_url = ''
+        if hasattr(browser, 'get_current_url'):
+            try:
+                current_url = await browser.get_current_url()
+            except Exception:
+                pass
+        visited_urls = {current_url} if current_url else set()
+
         for page_num in range(max_pages - 1):
             try:
                 prev_data_count = len(all_data)
 
                 if pagination_type == 'click':
-                    next_btn = await browser.page.query_selector(next_selector)
-                    if next_btn:
-                        await next_btn.click()
-                        await browser.page.wait_for_load_state('networkidle')
-                        await browser.page.wait_for_timeout(1000)  # 等待内容加载
-                    else:
+                    clicked = await self._click_next_page(browser, configured_selector)
+                    if not clicked:
                         break
-                elif pagination_type == 'scroll':
-                    # 滚动前记录位置
-                    prev_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
+                    try:
+                        await browser.page.wait_for_load_state('networkidle', timeout=10000)
+                    except Exception:
+                        pass
+                    await browser.page.wait_for_timeout(500)
 
+                    # 循环检测
+                    if hasattr(browser, 'get_current_url'):
+                        try:
+                            new_url = await browser.get_current_url()
+                            if new_url and new_url in visited_urls:
+                                print(f"检测到 URL 循环，停止翻页: {new_url}")
+                                break
+                            if new_url:
+                                visited_urls.add(new_url)
+                        except Exception:
+                            pass
+
+                elif pagination_type == 'scroll':
+                    prev_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
                     await browser.scroll_to_bottom()
                     await browser.page.wait_for_timeout(1000)
-
-                    # 检测是否到底（滚动后高度没变化）
                     new_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
                     if new_scroll_height == prev_scroll_height:
                         print("已到达页面底部")
                         break
 
                 elif pagination_type == 'url':
-                    # URL 分页逻辑
-                    current_url = await browser.get_current_url()
-                    next_url = self._get_next_page_url(current_url, page_num + 2)
-                    if next_url:
-                        await browser.navigate(next_url)
-                    else:
+                    if hasattr(browser, 'get_current_url'):
+                        try:
+                            current_url = await browser.get_current_url()
+                        except Exception:
+                            pass
+                    # 优先级：DOM 提取 next_url → 推断 URL → 从链接发现
+                    next_url = await self._extract_next_url_from_dom(browser)
+                    if not next_url:
+                        next_url = self._get_next_page_url(current_url, page_num + 2)
+                    if not next_url:
+                        next_url = await self._discover_next_url_from_links(
+                            browser, current_url, page_num + 2
+                        )
+                    if not next_url or next_url in visited_urls:
                         break
+                    visited_urls.add(next_url)
+                    await browser.navigate(next_url)
 
                 # 提取新数据
-                html = await browser.get_html()
                 new_data = await self._extract_with_selectors(
                     browser, selectors, strategy, metrics, required_fields
                 )
@@ -1527,7 +1588,7 @@ class ActAgent(AgentInterface):
                         all_data.append(item)
                         seen_keys.add(item_key)
 
-                # 如果没有新数据，可能已到底
+                # 无新数据则停止
                 if len(all_data) == prev_data_count:
                     print(f"分页第 {page_num + 2} 页无新数据，停止翻页")
                     break
@@ -1538,39 +1599,177 @@ class ActAgent(AgentInterface):
 
         return all_data
 
+    async def _click_next_page(self, browser, configured_selector: str = '') -> bool:
+        """语义化点击下一页：configured → rel=next → aria-label → 容器 → 文本匹配"""
+        page = browser.page
+
+        # 优先级1：使用配置的选择器
+        if configured_selector:
+            elem = await page.query_selector(configured_selector)
+            if elem:
+                await elem.click()
+                return True
+
+        # 优先级2：rel="next"
+        elem = await page.query_selector('a[rel="next"]')
+        if elem:
+            await elem.click()
+            return True
+
+        # 优先级3：aria-label 含 next/下一页
+        for selector in ('[aria-label*="next" i]', '[aria-label*="下一页"]'):
+            elem = await page.query_selector(selector)
+            if elem:
+                await elem.click()
+                return True
+
+        # 优先级4：常见分页容器选择器
+        for selector in [
+            '.pagination .next a', '.pager .next a', 'nav.pagination a.next',
+            'a.next', 'button.next', '.next-page a', '.next-page button',
+            'li.next a', '.pagination-next a',
+        ]:
+            elem = await page.query_selector(selector)
+            if elem:
+                await elem.click()
+                return True
+
+        # 优先级5：精确文本匹配（下一页 / Next / › / »）
+        next_texts = ['下一页', 'Next', '›', '»']
+        for text in next_texts:
+            try:
+                handle = await page.evaluate_handle(
+                    """(text) => {
+                        const tags = ['a', 'button', 'li', 'span'];
+                        for (const tag of tags) {
+                            for (const el of document.querySelectorAll(tag)) {
+                                if (el.textContent.trim() === text) return el;
+                            }
+                        }
+                        return null;
+                    }""",
+                    text
+                )
+                elem = handle.as_element()
+                if elem:
+                    await elem.click()
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    async def _extract_next_url_from_dom(self, browser) -> Optional[str]:
+        """从 DOM 中提取下一页 URL（优先 a[rel=next]）"""
+        from urllib.parse import urljoin
+
+        try:
+            href = await browser.page.evaluate(
+                """() => {
+                    const el = document.querySelector('a[rel="next"]') ||
+                               document.querySelector('link[rel="next"]');
+                    return el ? el.getAttribute('href') : null;
+                }"""
+            )
+            if href:
+                current_url = ''
+                if hasattr(browser, 'get_current_url'):
+                    try:
+                        current_url = await browser.get_current_url()
+                    except Exception:
+                        pass
+                return urljoin(current_url, href)
+        except Exception:
+            pass
+        return None
+
+    async def _discover_next_url_from_links(
+        self, browser, current_url: str, next_page: int
+    ) -> Optional[str]:
+        """从页面链接中发现分页规律，推断下一页 URL"""
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
+
+        try:
+            hrefs = await browser.page.evaluate(
+                """() => Array.from(document.querySelectorAll('a[href]'))
+                             .map(a => a.getAttribute('href'))
+                             .filter(h => h && !h.startsWith('#'))"""
+            )
+        except Exception:
+            return None
+
+        current_parsed = urlparse(current_url)
+        page_params = ['page', 'p', 'pageNum', 'pn', 'pg']
+
+        for href in hrefs or []:
+            full_url = urljoin(current_url, href)
+            parsed = urlparse(full_url)
+            if parsed.netloc != current_parsed.netloc:
+                continue
+            query_params = parse_qs(parsed.query)
+            for param in page_params:
+                if param in query_params:
+                    try:
+                        num = int(query_params[param][0])
+                        if num in (next_page - 1, next_page):
+                            query_params[param] = [str(next_page)]
+                            new_query = urlencode(query_params, doseq=True)
+                            return urlunparse(parsed._replace(query=new_query))
+                    except (ValueError, IndexError):
+                        pass
+
+        return None
+
     def _get_next_page_url(self, current_url: str, next_page: int) -> Optional[str]:
         """
         生成下一页 URL
 
         支持:
-        - ?page=N 格式
-        - /page/N 格式
-        - /N 格式
+        - 查询参数: page, p, pageNum, pn, pg (页码参数)
+        - 查询参数: offset, start, from, skip (偏移参数，增量 = next_page-1 × 20)
+        - /page/N 路径格式
+        - 路径末尾数字格式
         """
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        import re
 
         parsed = urlparse(current_url)
-
-        # 尝试 ?page=N 格式
         query_params = parse_qs(parsed.query)
-        if 'page' in query_params:
-            query_params['page'] = [str(next_page)]
-            new_query = urlencode(query_params, doseq=True)
-            return urlunparse(parsed._replace(query=new_query))
 
-        # 尝试 /page/N 或 /N 格式
-        path_parts = parsed.path.rstrip('/').split('/')
-        if path_parts and path_parts[-1].isdigit():
-            # 替换最后的数字
-            path_parts[-1] = str(next_page)
-            new_path = '/'.join(path_parts)
+        # 页码参数（直接替换为 next_page）
+        for param in ['page', 'p', 'pageNum', 'pn', 'pg']:
+            if param in query_params:
+                query_params[param] = [str(next_page)]
+                new_query = urlencode(query_params, doseq=True)
+                return urlunparse(parsed._replace(query=new_query))
+
+        # 偏移参数（根据当前偏移和当前页码推算步长）
+        for param in ['offset', 'start', 'from', 'skip']:
+            if param in query_params:
+                try:
+                    current_offset = int(query_params[param][0])
+                    current_page = next_page - 1  # 当前所在页
+                    if current_page > 1 and current_offset > 0:
+                        page_size = current_offset // (current_page - 1)
+                    else:
+                        page_size = current_offset if current_offset > 0 else 20
+                    new_offset = page_size * (next_page - 1)
+                    query_params[param] = [str(new_offset)]
+                    new_query = urlencode(query_params, doseq=True)
+                    return urlunparse(parsed._replace(query=new_query))
+                except (ValueError, IndexError, ZeroDivisionError):
+                    pass
+
+        # /page/N 路径格式
+        if re.search(r'/page/\d+', parsed.path):
+            new_path = re.sub(r'/page/\d+', f'/page/{next_page}', parsed.path)
             return urlunparse(parsed._replace(path=new_path))
 
-        # 尝试添加 /page/N
-        if 'page' in parsed.path.lower():
-            # 已有 page，替换数字
-            import re
-            new_path = re.sub(r'/page/\d+', f'/page/{next_page}', parsed.path)
+        # 路径末尾为数字格式
+        path_parts = parsed.path.rstrip('/').split('/')
+        if path_parts and path_parts[-1].isdigit():
+            path_parts[-1] = str(next_page)
+            new_path = '/'.join(path_parts)
             return urlunparse(parsed._replace(path=new_path))
 
         return None
