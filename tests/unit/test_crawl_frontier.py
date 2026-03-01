@@ -305,8 +305,8 @@ def test_state_manager_sync_frontier():
     item = frontier.pop()
     frontier.mark_visited(item.url)
 
-    sm.sync_frontier(frontier)
-    state = sm.get_state()
+    sm.sync_frontier_sync(frontier)
+    state = sm.get_state_reference()
     assert state['pages_crawled'] == 1
     assert state['queue_size'] == 1
     assert len(state['visited_urls']) == 1
@@ -318,8 +318,8 @@ def test_state_manager_add_url_result():
 
     sm = StateManager()
     sm.create_initial_state_sync('task_1', {})
-    sm.add_url_result('https://example.com/page', {'records_count': 5, 'success': True})
+    sm.add_url_result_sync('https://example.com/page', {'records_count': 5, 'success': True})
 
-    state = sm.get_state()
+    state = sm.get_state_reference()
     assert 'https://example.com/page' in state['per_url_results']
     assert state['per_url_results']['https://example.com/page']['records_count'] == 5

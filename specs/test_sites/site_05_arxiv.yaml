@@ -13,12 +13,12 @@ targets:
     fields:
       - name: "title"
         type: "text"
-        selector: ".list-title"
+        selector: ~
         required: true
         description: "Paper title"
       - name: "authors"
         type: "text"
-        selector: ".list-authors"
+        selector: ~
         required: true
         description: "Paper authors"
       - name: "abstract"

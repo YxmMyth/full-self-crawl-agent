@@ -78,7 +78,7 @@ class TestStateManagerAddErrorSync:
     def test_add_error_sync_records_error(self):
         """add_error_sync 应立即将错误写入状态"""
         self.sm.add_error_sync('test error message')
-        state = self.sm.get_state()
+        state = self.sm.get_state_reference()
         assert state.get('last_error') == 'test error message'
         assert any(
             'test error message' in str(e.get('message', ''))
@@ -95,7 +95,7 @@ class TestStateManagerAddErrorSync:
     async def test_add_error_async_still_works(self):
         """异步版本 add_error 仍可正常使用"""
         await self.sm.add_error('async error')
-        state = self.sm.get_state()
+        state = self.sm.get_state_reference()
         assert state.get('last_error') == 'async error'
 
 

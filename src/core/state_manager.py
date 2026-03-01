@@ -66,6 +66,28 @@ class StateManager:
             self.current_state = initial_state
             return initial_state
 
+    def create_initial_state_sync(self, task_id: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """创建初始状态（同步版本）"""
+        initial_state = {
+            'task_id': task_id,
+            'spec': spec,
+            'stage': 'initialized',
+            'iteration': 0,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            'performance_data': {},
+            'failure_history': [],
+            'evidence_collected': {},
+            'update_count': 0,
+            # 爬取追踪字段
+            'visited_urls': [],
+            'queue_size': 0,
+            'pages_crawled': 0,
+            'per_url_results': {},
+        }
+        self.current_state = initial_state
+        return initial_state
+
     def update_state_sync(self, updates: Dict[str, Any], reason: str = "") -> None:
         """
         同步版本的更新状态方法（用于向后兼容）
@@ -275,6 +297,12 @@ class StateManager:
             self.current_state['queue_size'] = frontier.queue_size()
             self.current_state['pages_crawled'] = frontier.pages_crawled()
 
+    def sync_frontier_sync(self, frontier: Any) -> None:
+        """从 CrawlFrontier 同步爬取追踪数据到状态（同步版本）。"""
+        self.current_state['visited_urls'] = frontier.get_visited_urls()
+        self.current_state['queue_size'] = frontier.queue_size()
+        self.current_state['pages_crawled'] = frontier.pages_crawled()
+
     async def add_url_result(self, url: str, result: Dict[str, Any]) -> None:
         """
         记录单个 URL 的提取结果摘要。
@@ -287,3 +315,9 @@ class StateManager:
             if 'per_url_results' not in self.current_state:
                 self.current_state['per_url_results'] = {}
             self.current_state['per_url_results'][url] = result
+
+    def add_url_result_sync(self, url: str, result: Dict[str, Any]) -> None:
+        """记录单个 URL 的提取结果摘要（同步版本）。"""
+        if 'per_url_results' not in self.current_state:
+            self.current_state['per_url_results'] = {}
+        self.current_state['per_url_results'][url] = result

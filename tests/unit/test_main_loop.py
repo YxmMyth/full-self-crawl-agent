@@ -178,7 +178,7 @@ class TestRunFullSite:
         agent.spec = spec
         agent.state_manager = MagicMock()
         agent.state_manager.update_state_sync = MagicMock()
-        agent.state_manager.get_state = MagicMock(return_value={})
+        agent.state_manager.get_state = AsyncMock(return_value={})
         agent.evidence_storage = MagicMock()
         agent.evidence_storage.save_data = MagicMock()
         agent.llm_client = None
@@ -348,13 +348,13 @@ class TestRunSingleOrMulti:
         agent.spec = spec
         agent.state_manager = MagicMock()
         agent.state_manager.update_state_sync = MagicMock()
-        agent.state_manager.get_state = MagicMock(return_value={
+        agent.state_manager.get_state = AsyncMock(return_value={
             'html_snapshot': '<html></html>',
             'sense_analysis': {'page_type': 'list'},
             'quality_score': 0.9,
             'sample_data': [],
         })
-        agent.state_manager.get_history = MagicMock(return_value=[])
+        agent.state_manager.get_history = AsyncMock(return_value=[])
         agent.evidence_storage = MagicMock()
         agent.evidence_storage.save_data = MagicMock()
         agent.evidence_collector = MagicMock()
@@ -530,7 +530,7 @@ class TestRunDispatch:
         agent.browser.navigate = AsyncMock()
         agent.state_manager = MagicMock()
         agent.state_manager.update_state_sync = MagicMock()
-        agent.state_manager.get_state = MagicMock(return_value={})
+        agent.state_manager.get_state = AsyncMock(return_value={})
         agent.state_storage = MagicMock()
         agent.state_storage.save_state = MagicMock()
         agent.evidence_collector = MagicMock()

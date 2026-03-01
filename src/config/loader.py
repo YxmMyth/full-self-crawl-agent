@@ -154,8 +154,8 @@ class SpecLoader:
                     # 必需字段
                     if 'name' not in field:
                         raise ValueError(f"Target '{target['name']}' field {j} missing 'name'")
-                    if 'selector' not in field:
-                        raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' missing 'selector'")
+                    if 'selector' not in field and 'description' not in field:
+                        raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' requires either 'selector' or 'description'")
         elif crawl_mode == 'full_site':
             # 对于全站爬取模式，可能不需要预定义 targets，因为动态发现
             pass  # 验证将在运行时进行
@@ -178,8 +178,8 @@ class SpecLoader:
                     # 必需字段
                     if 'name' not in field:
                         raise ValueError(f"Target '{target['name']}' field {j} missing 'name'")
-                    if 'selector' not in field:
-                        raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' missing 'selector'")
+                    if 'selector' not in field and 'description' not in field:
+                        raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' requires either 'selector' or 'description'")
 
     def save_spec(self, spec: SpecContract, output_path: Union[str, Path]) -> None:
         """保存契约到文件"""

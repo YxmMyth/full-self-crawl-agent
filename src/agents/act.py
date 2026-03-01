@@ -183,6 +183,86 @@ class ActAgent(AgentInterface):
             'average_fields_per_item': sum(len(item) for item in data) / total_items if total_items > 0 else 0
         }
 
+    def _get_next_page_url(self, current_url: str, next_page: int) -> Optional[str]:
+        """
+        根据当前 URL 和目标页码推算下一页 URL。
+
+        Args:
+            current_url: 当前页面 URL
+            next_page: 目标页码
+
+        Returns:
+            下一页 URL，若无法推算则返回 None
+        """
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        parsed = urlparse(current_url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+
+        # 页码类参数
+        for param in ('page', 'p', 'pageNum', 'pn', 'pg'):
+            if param in params:
+                params[param] = [str(next_page)]
+                new_query = urlencode(params, doseq=True)
+                return urlunparse(parsed._replace(query=new_query))
+
+        # offset/start 类参数
+        # current_page = next_page - 1; page_size = current_offset / (current_page - 1) if current_page > 1 else current_offset
+        for param in ('offset', 'start'):
+            if param in params:
+                current_offset = int(params[param][0])
+                current_page = next_page - 1
+                page_size = current_offset // max(current_page - 1, 1) if current_page > 1 else current_offset
+                params[param] = [str(page_size * (next_page - 1))]
+                new_query = urlencode(params, doseq=True)
+                return urlunparse(parsed._replace(query=new_query))
+
+        # /page/N 路径模式
+        path = parsed.path
+        page_path_match = re.search(r'(/page/)(\d+)', path)
+        if page_path_match:
+            new_path = path[:page_path_match.start(2)] + str(next_page) + path[page_path_match.end(2):]
+            return urlunparse(parsed._replace(path=new_path))
+
+        # 路径末尾数字模式（如 /articles/1）
+        numeric_end_match = re.search(r'(/\d+)$', path)
+        if numeric_end_match:
+            new_path = path[:numeric_end_match.start(1)] + '/' + str(next_page)
+            return urlunparse(parsed._replace(path=new_path))
+
+        return None
+
+    async def _extract_next_url_from_dom(self, browser) -> Optional[str]:
+        """从 DOM 中提取 rel=next 链接作为下一页 URL。"""
+        from urllib.parse import urljoin
+        try:
+            href = await browser.page.evaluate(
+                'document.querySelector("a[rel~=\'next\']")?.getAttribute("href") ?? null'
+            )
+            if not href:
+                return None
+            if href.startswith('http'):
+                return href
+            base_url = await browser.get_current_url()
+            return urljoin(base_url, href)
+        except Exception:
+            return None
+
+    async def _discover_next_url_from_links(self, browser, current_url: str,
+                                            next_page: int) -> Optional[str]:
+        """从页面中的所有链接里发现下一页 URL。"""
+        try:
+            hrefs = await browser.page.evaluate(
+                'Array.from(document.querySelectorAll("a[href]")).map(a => a.getAttribute("href"))'
+            )
+            for href in (hrefs or []):
+                candidate = self._get_next_page_url(href, next_page)
+                if candidate:
+                    return candidate
+            return None
+        except Exception:
+            return None
+
     def get_description(self) -> str:
         return "执行数据提取操作"
 

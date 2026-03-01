@@ -6,6 +6,17 @@ import json
 from pathlib import Path
 
 
+def _playwright_browser_available() -> bool:
+    """Check whether the Playwright Chromium headless shell binary is installed."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            # If the binary doesn't exist this raises
+            p.chromium.executable_path  # noqa: B018 (access to trigger check)
+            return Path(p.chromium.executable_path).exists()
+    except Exception:
+        return False
+
 class TestConfig:
     """测试配置加载"""
 
@@ -45,6 +56,10 @@ class TestTools:
     """测试工具层"""
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not _playwright_browser_available(),
+        reason="Playwright Chromium browser not installed; run 'playwright install chromium'"
+    )
     async def test_browser_tool(self):
         """测试浏览器工具"""
         from src.tools.browser import BrowserTool

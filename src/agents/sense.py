@@ -116,13 +116,35 @@ class SenseAgent(AgentInterface):
         llm_client = context.get('llm_client')
         degradation_info = None
 
+        _empty_result = {
+            'success': False,
+            'html_snapshot': None,
+            'screenshot': None,
+            'structure': {
+                'page_type': 'unknown',
+                'pagination_type': 'none',
+                'pagination_next_url': None,
+                'main_content_selector': None,
+                'estimated_items': 0,
+                'complexity': 'simple',
+                'has_pagination': False,
+                'content_selectors': [],
+            },
+            'features': {},
+            'anti_bot_detected': False,
+            'anti_bot_info': {'detected': False},
+        }
+
         try:
             # 1. 获取页面 HTML 和截图
             html = await browser.get_html()
             screenshot = await browser.take_screenshot()
 
-            # 2. 基础特征提取
+            # 2. SPA 检测并等待渲染
             features = self._extract_features(html)
+            if features.get('is_spa'):
+                html = await self._wait_for_spa_render(browser)
+                features = self._extract_features(html)
 
             # 3. 使用 LLM 深度分析（推理任务，使用 DeepSeek）
             llm_analysis = {}
@@ -139,21 +161,33 @@ class SenseAgent(AgentInterface):
                     if degradation_info.get('should_warn'):
                         print(f"警告: {degradation_info['message']}")
 
+            # 4. 确定分页类型
+            pagination_type = self._determine_pagination_type(
+                features.get('pagination_info', {}),
+                features
+            )
+
+            anti_bot_detected = features.get('anti_bot_detected', False)
+            anti_bot_info = {'detected': anti_bot_detected}
+
             result = {
                 'success': True,
                 'html_snapshot': html,
                 'screenshot': screenshot,
                 'structure': {
                     'page_type': llm_analysis.get('page_type', features['page_type']),
-                    'pagination_type': llm_analysis.get('pagination_type', features['pagination_type']),
-                    'main_content_selector': llm_analysis.get('main_content_selector', features['main_content_selector']),
+                    'pagination_type': pagination_type,
+                    'pagination_next_url': features.get('pagination_info', {}).get('next_url'),
+                    'main_content_selector': features['main_content_selector'] or None,
+                    'estimated_items': features.get('estimated_items', 0),
                     'complexity': features['complexity'],
                     'has_pagination': features['has_pagination'],
                     'content_selectors': features['content_selectors'],
                 },
                 'features': features,
                 'llm_analysis': llm_analysis,
-                'anti_bot_detected': features['anti_bot_detected']
+                'anti_bot_detected': anti_bot_detected,
+                'anti_bot_info': anti_bot_info,
             }
 
             # 添加降级信息
@@ -169,11 +203,10 @@ class SenseAgent(AgentInterface):
             degradation_info = self.degradation_tracker.record_degradation(
                 self.name, 'execute', error_msg
             )
-            return {
-                'success': False,
-                'error': str(e),
-                'degradation': degradation_info
-            }
+            result = dict(_empty_result)
+            result['error'] = str(e)
+            result['degradation'] = degradation_info
+            return result
 
     def _extract_features(self, html: str) -> Dict[str, Any]:
         """提取基础特征"""
@@ -191,19 +224,36 @@ class SenseAgent(AgentInterface):
         else:
             page_type = 'static'
 
-        # 分页检测
-        pagination_patterns = [
-            r'page', r'pager', r'pagination', r'翻页', r'下一页', r'next',
-            r'class=".*page', r'id=".*page', r'pagination'
-        ]
+        # SPA 检测
+        scripts = soup.find_all('script', src=True)
+        spa_patterns = [r'\.chunk\.js', r'vendor\.\w+\.js', r'app\.\w+\.js',
+                        r'react', r'vue', r'angular', r'webpack']
+        is_spa = any(
+            re.search(p, s.get('src', ''), re.IGNORECASE)
+            for s in scripts for p in spa_patterns
+        )
 
+        # 分页检测 - 使用更精确的逻辑（基于结构元素，不扫描文本内容）
+        pagination_info = {'next_url': None, 'has_next': False}
         has_pagination = False
-        pagination_type = 'none'
-        for pattern in pagination_patterns:
-            if re.search(pattern, html, re.IGNORECASE):
-                has_pagination = True
-                pagination_type = 'standard'  # 可以进一步细化
-                break
+
+        # 优先检测 rel=next
+        next_link = soup.find('a', rel=lambda r: r and 'next' in r)
+        if next_link:
+            pagination_info['next_url'] = next_link.get('href')
+            pagination_info['has_next'] = True
+            has_pagination = True
+        else:
+            # 检测分页容器元素（基于 class/id 属性，不检测文本）
+            pagination_selectors = [
+                '[class*="pager"]', '[class*="pagination"]',
+                '[id*="pager"]', '[id*="pagination"]',
+            ]
+            for sel in pagination_selectors:
+                if soup.select(sel):
+                    has_pagination = True
+                    pagination_info['has_next'] = True
+                    break
 
         # 主内容选择器
         main_selectors = [
@@ -211,7 +261,7 @@ class SenseAgent(AgentInterface):
             '.post', '.article', '.entry-content'
         ]
 
-        main_content_selector = ''
+        main_content_selector = None
         for selector in main_selectors:
             if soup.select(selector):
                 main_content_selector = selector
@@ -228,6 +278,24 @@ class SenseAgent(AgentInterface):
                     if len(elem.get_text(strip=True)) > 50:  # 有实质内容
                         content_selectors.append(selector)
 
+        # 容器/列表项检测
+        container_info = {'found': False, 'selector': None, 'count': 0}
+        estimated_items = 0
+        for container_tag in ['ul', 'ol', 'table']:
+            container = soup.find(container_tag)
+            if container:
+                items = container.find_all('li' if container_tag in ('ul', 'ol') else 'tr')
+                if len(items) >= 3:
+                    container_info = {
+                        'found': True,
+                        'selector': container_tag,
+                        'count': len(items),
+                    }
+                    estimated_items = len(items)
+                    if main_content_selector is None:
+                        main_content_selector = container_tag
+                    break
+
         # 复杂度评估
         complexity_score = len(soup.find_all(['script', 'style'])) + len(set(soup.get_text())) // 100
         complexity = 'simple' if complexity_score < 20 else ('medium' if complexity_score < 50 else 'complex')
@@ -241,16 +309,40 @@ class SenseAgent(AgentInterface):
 
         return {
             'page_type': page_type,
-            'pagination_type': pagination_type,
-            'main_content_selector': main_content_selector,
-            'content_selectors': content_selectors,
+            'is_spa': is_spa,
+            'pagination_info': pagination_info,
             'has_pagination': has_pagination,
+            'main_content_selector': main_content_selector,
+            'estimated_items': estimated_items,
+            'container_info': container_info,
+            'content_selectors': content_selectors,
             'complexity': complexity,
             'anti_bot_detected': anti_bot_detected,
+            'anti_bot_level': 'none' if not anti_bot_detected else 'medium',
             'dom_size': len(html),
             'link_count': len(soup.find_all('a')),
             'image_count': len(soup.find_all('img')),
         }
+
+    def _determine_pagination_type(self, pagination_info: Dict[str, Any],
+                                    features: Dict[str, Any]) -> str:
+        """根据页面信号确定分页类型"""
+        if pagination_info.get('next_url') or pagination_info.get('has_next'):
+            return 'click'
+        if features.get('has_pagination'):
+            return 'url'
+        return 'none'
+
+    async def _wait_for_spa_render(self, browser) -> str:
+        """等待 SPA 页面渲染完成并返回 HTML"""
+        try:
+            await browser.page.wait_for_load_state('networkidle')
+        except Exception:
+            try:
+                await browser.page.wait_for_timeout(2000)
+            except Exception:
+                pass
+        return await browser.get_html()
 
     async def _llm_analyze(self, html: str, features: Dict, spec: Dict, llm_client) -> Dict:
         """使用 LLM 深度分析页面结构"""
