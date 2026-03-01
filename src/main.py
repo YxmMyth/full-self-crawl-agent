@@ -230,7 +230,7 @@ class SelfCrawlingAgent:
                         except Exception:
                             pass
 
-                    logger.debug(f"页面类型: {sense_result.get('structure', {}).get('type', 'unknown')}")
+                    logger.debug(f"页面类型: {sense_result.get('structure', {}).get('page_type', 'unknown')}")
                     logger.debug(f"复杂度: {sense_result.get('structure', {}).get('complexity', 'unknown')}")
                     logger.debug(f"反爬检测: {'是' if sense_result.get('anti_bot_detected') else '否'}")
 
