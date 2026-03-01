@@ -2,7 +2,6 @@
 代码执行器
 在沙箱环境中安全执行代码
 """
-
 from typing import Dict, Any, List, Optional, Tuple, Set
 import asyncio
 import subprocess
@@ -12,13 +11,26 @@ import json
 import sys
 import re
 import logging
+import ast
 
 logger = logging.getLogger('executor')
 
 
+# 安全模块白名单（仅允许导入这些模块）
+SAFE_MODULES: Set[str] = {
+    'json', 're', 'math', 'datetime', 'collections',
+    'itertools', 'functools', 'typing', 'dataclasses',
+    'bs4', 'BeautifulSoup', 'lxml', 'html.parser',
+    'time', 'random', 'statistics', 'decimal', 'fractions',
+    'urllib.parse', 'urllib.request', 'requests',  # 注意：requests 在严格模式下仍需额外检查
+    'csv', 'xml.etree.ElementTree', 'xml.dom.minidom',
+    'hashlib', 'uuid', 'string', 'copy', 'enum',
+    'operator', 'calendar', 'zoneinfo', 'zoneinfo.ZoneInfo'
+}
+
 # 危险模块和函数黑名单（用于非容器模式的严格沙箱）
 DANGEROUS_MODULES: Set[str] = {
-    'os', 'subprocess', 'sys', 'shutil', 'socket', 'requests',
+    'os', 'subprocess', 'sys', 'shutil', 'socket', 'requests',  # 'requests' 在此处是为了在某些情况下进一步限制
     'urllib', 'http', 'ftplib', 'telnetlib', 'smtplib', 'poplib',
     'imaplib', 'nntplib', 'popen2', 'commands', 'pexpect',
     'paramiko', 'fabric', 'cryptography', 'pickle', 'shelve',
@@ -31,7 +43,7 @@ DANGEROUS_FUNCTIONS: Set[str] = {
     'raw_input', 'file', 'reload', '__import__', 'globals',
     'locals', 'vars', 'dir', 'getattr', 'setattr', 'delattr',
     'hasattr', 'type', 'object', 'base64.b64decode',
-    'ctypes', 'multiprocessing', 'threading'
+    'ctypes', 'multiprocessing', 'threading', 'exec'
 }
 
 DANGEROUS_PATTERNS = [
@@ -50,6 +62,77 @@ DANGEROUS_PATTERNS = [
     r'\bdelattr\s*\(',
     r'\bhasattr\s*\(',
 ]
+
+# AST-based dangerous nodes
+DANGEROUS_AST_NODES = {
+    ast.Import, ast.ImportFrom,  # Imports are checked separately
+    ast.Call,  # Function calls are analyzed separately
+    ast.Attribute,  # Attribute access could be dangerous (e.g., os.system)
+    ast.Subscript,  # Could be used for dangerous operations
+    ast.Slice,  # Slice operations
+    ast.ListComp,  # List comprehensions could be used for side effects
+    ast.GeneratorExp,  # Generator expressions
+}
+
+
+class ASTSecurityVisitor(ast.NodeVisitor):
+    """
+    AST 安全检查访问器
+    分析代码 AST 结构，识别潜在危险操作
+    """
+
+    def __init__(self, allowed_modules=None):
+        self.issues = []
+        self.dangerous_functions_called = []
+        self.dangerous_imports = []
+        self.allowed_modules = allowed_modules or set()
+
+    def visit_Import(self, node):
+        """检查导入语句"""
+        for alias in node.names:
+            module_name = alias.name.split('.')[0]  # 只检查顶级模块
+            if self.allowed_modules and module_name not in self.allowed_modules:
+                if module_name in DANGEROUS_MODULES:
+                    self.issues.append(f"Dangerous import detected: {module_name}")
+                    self.dangerous_imports.append(module_name)
+            elif module_name in DANGEROUS_MODULES:
+                self.issues.append(f"Dangerous import detected: {module_name}")
+                self.dangerous_imports.append(module_name)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        """检查 from...import 语句"""
+        module_name = node.module.split('.')[0] if node.module else ""
+
+        # 检查是否在允许的模块列表中
+        if self.allowed_modules and module_name not in self.allowed_modules:
+            if module_name in DANGEROUS_MODULES:
+                self.issues.append(f"Dangerous from-import detected: {module_name}")
+                self.dangerous_imports.append(module_name)
+        elif module_name in DANGEROUS_MODULES:
+            self.issues.append(f"Dangerous from-import detected: {module_name}")
+            self.dangerous_imports.append(module_name)
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        """检查函数调用"""
+        # 检查函数名
+        func_name = None
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            # Handle attribute calls like os.system
+            attr_name = node.func.attr
+            if attr_name in DANGEROUS_FUNCTIONS:
+                full_call = f"{node.func.attr}"
+                self.issues.append(f"Dangerous function call: {full_call}")
+                self.dangerous_functions_called.append(full_call)
+
+        if func_name and func_name in DANGEROUS_FUNCTIONS:
+            self.issues.append(f"Dangerous function call: {func_name}")
+            self.dangerous_functions_called.append(func_name)
+
+        self.generic_visit(node)
 
 
 class Executor:
@@ -159,9 +242,9 @@ class DefaultSandbox:
         }
         self.strict_mode = strict_mode
 
-    def validate_code(self, code: str) -> Tuple[bool, List[str]]:
+    def validate_code_ast(self, code: str) -> Tuple[bool, List[str]]:
         """
-        验证代码安全性
+        使用 AST 分析验证代码安全性
 
         Args:
             code: 要验证的代码
@@ -171,14 +254,53 @@ class DefaultSandbox:
         """
         issues = []
 
+        try:
+            # 解析代码为 AST
+            tree = ast.parse(code)
+
+            # 使用安全访问器遍历 AST
+            visitor = ASTSecurityVisitor(allowed_modules=self.allowed_modules)
+            visitor.visit(tree)
+
+            # 合并问题
+            issues.extend(visitor.issues)
+
+        except SyntaxError as e:
+            issues.append(f"Syntax error in code: {str(e)}")
+
+        return len(issues) == 0, issues
+
+    def validate_code(self, code: str) -> Tuple[bool, List[str]]:
+        """
+        验证代码安全性 - 使用多种验证方式，优先使用白名单机制
+        """
+        issues = []
+
         if not self.strict_mode:
             return True, issues
+
+        # 首先进行白名单检查（如果设置了允许模块）
+        if self.allowed_modules:
+            # 检查导入语句是否都在允许范围内
+            import_match_patterns = [
+                r'^\s*import\s+([a-zA-Z0-9_.]+)',
+                r'^\s*from\s+([a-zA-Z0-9_.]+)\s+import',
+            ]
+
+            for pattern in import_match_patterns:
+                for match in re.finditer(pattern, code, re.MULTILINE):
+                    imported_module = match.group(1).split('.')[0]  # 只检查顶层模块
+                    if imported_module not in self.allowed_modules:
+                        issues.append(f"检测到不允许的模块导入: {imported_module}")
+
+        # 正则表达式检查（保留黑名单检查作为后备）
+        regex_issues = []
 
         # 检查危险模式
         for pattern in DANGEROUS_PATTERNS:
             matches = re.findall(pattern, code)
             if matches:
-                issues.append(f"检测到危险操作: {pattern}")
+                regex_issues.append(f"检测到危险操作: {pattern}")
 
         # 检查危险模块导入
         import_patterns = [
@@ -190,13 +312,30 @@ class DefaultSandbox:
             for match in re.finditer(pattern, code, re.MULTILINE):
                 module = match.group(1)
                 if module in DANGEROUS_MODULES:
-                    issues.append(f"检测到危险模块导入: {module}")
+                    regex_issues.append(f"检测到危险模块导入: {module}")
 
-        # 检查危险函数调用
+        # 检查危险函数调用（更精确的模式）
         for func in DANGEROUS_FUNCTIONS:
+            # 避免误报，只匹配函数调用形式，而非变量名或注释
             pattern = rf'\b{re.escape(func)}\s*\('
             if re.search(pattern, code):
-                issues.append(f"检测到危险函数调用: {func}")
+                regex_issues.append(f"检测到危险函数调用: {func}")
+
+        # 额外的安全检查：检测动态导入
+        dynamic_import_pattern = r'__import__|importlib\.import_module|exec\(|eval\('
+        if re.search(dynamic_import_pattern, code):
+            regex_issues.append("检测到动态导入或执行函数，可能存在安全风险")
+
+        # 额外的安全检查：检测文件系统访问
+        file_access_pattern = r'open\(|\.write\(|\.read\(|shutil\.|os\.path'
+        if re.search(file_access_pattern, code):
+            regex_issues.append("检测到文件系统访问函数")
+
+        issues.extend(regex_issues)
+
+        # AST 分析检查
+        ast_is_safe, ast_issues = self.validate_code_ast(code)
+        issues.extend(ast_issues)
 
         return len(issues) == 0, issues
 

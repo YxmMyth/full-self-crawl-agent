@@ -115,19 +115,39 @@ class SpecInferrer:
         根据页面特征和链接数量推断 crawl_mode。
 
         规则优先级（从高到低）：
-        1. SPA 页面 → single_page（不适合递归爬取）
+        1. 明确的 SPA 页面且无分页 → single_page（不适合递归爬取）
         2. 有分页 → multi_page
         3. 发现大量链接（≥5）且有重复容器 → full_site
-        4. 默认 → single_page
+        4. 检查 URL 特征（如包含分页参数）→ multi_page
+        5. 默认 → single_page
         """
-        if features.get('is_spa'):
+        is_spa = features.get('is_spa', False)
+        has_pagination = features.get('has_pagination', False)
+
+        # 如果既是SPA又有分页，这可能是一个具有动态分页的SPA，仍然作为single_page处理
+        if is_spa:
             return 'single_page'
 
-        if features.get('has_pagination'):
+        if has_pagination:
             return 'multi_page'
 
         container_info = features.get('container_info', {})
-        if container_info.get('found') and len(links) >= 5:
+        has_repeating_containers = container_info.get('found', False)
+        significant_link_count = len(links) >= 5
+
+        # 更细致的 full_site 判断：需要同时满足有重复容器和相当数量的链接
+        if has_repeating_containers and significant_link_count:
+            return 'full_site'
+
+        # 作为补充判断，检查 URL 是否包含分页参数
+        url = features.get('url', '')
+        pagination_indicators = ['page=', 'p=', 'pg=', 'num=']
+        if any(indicator in url.lower() for indicator in pagination_indicators):
+            return 'multi_page'
+
+        # 进一步检查是否有明显的类别页面链接
+        category_indicators = ['/category/', '/tag/', '/archive/', '/search/', '/page/']
+        if links and any(any(indicator in link.lower() for indicator in category_indicators) for link in links):
             return 'full_site'
 
         return 'single_page'

@@ -169,7 +169,7 @@ class SelfCrawlingAgent:
         - single_page: 对单个 URL 执行 Sense→Plan→Act→Verify→Gate→Judge→Reflect 循环
         - multi_page:  同 single_page，但 ActAgent 自动跟随分页，直到无下一页或达上限
         - full_site:   使用 ExploreAgent + CrawlFrontier 广度优先爬取多个页面，
-                       每页执行完整的 Sense→Plan→Act→Verify 流程
+                       每页执行完整的 Sense→Plan→Act→Verify→Judge→Reflect 流程
 
         Spec 自动推断：
         若 Spec 中未提供 crawl_mode / max_pages / max_depth，在首次感知后
@@ -201,12 +201,15 @@ class SelfCrawlingAgent:
                 return await self._run_single_or_multi(start_url, crawl_mode)
 
         except Exception as e:
-            logger.error(f"错误: {str(e)}")
-            logger.exception("详细错误信息:")
-            self.state_manager.add_error_sync(str(e))
+            error_msg = f"Critical error in main execution: {str(e)}"
+            logger.error(error_msg)
+            logger.exception("Detailed error traceback:")  # This adds full stack trace
+            self.state_manager.add_error_sync(f"{error_msg} - Traceback: {str(e.__traceback__)}" if e.__traceback__ else error_msg)
             return {
                 'success': False,
-                'error': str(e)
+                'error': error_msg,
+                'error_type': type(e).__name__,
+                'task_id': self.task_id
             }
 
         finally:
@@ -215,7 +218,7 @@ class SelfCrawlingAgent:
                 await self.browser.stop()
 
             # 保存最终状态
-            final_state = self.state_manager.get_state()
+            final_state = await self.state_manager.get_state()
             self.state_storage.save_state(self.task_id, final_state)
 
             # 保存证据索引
@@ -308,8 +311,10 @@ class SelfCrawlingAgent:
                     crawl_mode = self.spec.get('crawl_mode', crawl_mode)
 
             except Exception as e:
-                logger.error(f"感知异常: {str(e)}")
-                iteration_errors.append(f"sense_exception: {str(e)}")
+                error_details = f"Critical sensing exception: {str(e)}"
+                logger.error(error_details)
+                logger.exception("Sensing step error traceback:")  # Full traceback for debugging
+                iteration_errors.append(f"sense_exception: {str(e)} - Type: {type(e).__name__}")
                 sense_result = {'success': False, 'structure': {}, 'features': {}}
 
             # 2. Plan: 规划策略
@@ -347,8 +352,10 @@ class SelfCrawlingAgent:
                 )
 
             except Exception as e:
-                logger.error(f"规划异常: {str(e)}")
-                iteration_errors.append(f"plan_exception: {str(e)}")
+                error_details = f"Critical planning exception: {str(e)}"
+                logger.error(error_details)
+                logger.exception("Planning step error traceback:")
+                iteration_errors.append(f"plan_exception: {str(e)} - Type: {type(e).__name__}")
                 plan_result = {'success': False, 'selectors': {}, 'strategy': {}}
 
             # 3. Act: 执行提取
@@ -382,8 +389,10 @@ class SelfCrawlingAgent:
                 logger.info(f"提取数据: {len(extracted_data)} 条")
 
             except Exception as e:
-                logger.error(f"执行异常: {str(e)}")
-                iteration_errors.append(f"act_exception: {str(e)}")
+                error_details = f"Critical execution exception: {str(e)}"
+                logger.error(error_details)
+                logger.exception("Execution step error traceback:")
+                iteration_errors.append(f"act_exception: {str(e)} - Type: {type(e).__name__}")
                 extracted_data = []
                 act_result = {'extracted_data': [], 'extraction_metrics': {}}
 
@@ -418,12 +427,14 @@ class SelfCrawlingAgent:
                     logger.warning(f"问题: {verify_result['verification_result']['issues'][:3]}")
 
             except Exception as e:
-                logger.error(f"验证异常: {str(e)}")
-                iteration_errors.append(f"verify_exception: {str(e)}")
+                error_details = f"Critical verification exception: {str(e)}"
+                logger.error(error_details)
+                logger.exception("Verification step error traceback:")
+                iteration_errors.append(f"verify_exception: {str(e)} - Type: {type(e).__name__}")
 
             # 5. Gate: 门禁检查
             logger.info("[5/6] 门禁检查...")
-            current_state = self.state_manager.get_state()
+            current_state = await self.state_manager.get_state()
 
             risk_metrics = {
                 'iteration_count': iteration + 1,
@@ -511,7 +522,7 @@ class SelfCrawlingAgent:
                     reflect_result = await self.agent_pool.execute_capability(
                         'reflect',
                         {
-                            'execution_history': self.state_manager.get_history(),
+                            'execution_history': await self.state_manager.get_history(),
                             'errors': errors,
                             'quality_score': quality_score,
                             'spec': self.spec,
@@ -563,7 +574,7 @@ class SelfCrawlingAgent:
 
         流程：
         1. 初始化 CrawlFrontier，将 start_url 入队
-        2. 循环：pop URL → navigate → Sense → Plan → Act → Verify →
+        2. 循环：pop URL → navigate → Sense → Plan → Act → Verify → Judge → Reflect →
                  Explore（发现子链接推入 Frontier）
         3. 直到 Frontier 为空、达到 max_pages 或 max_depth 上限
         """
@@ -587,6 +598,7 @@ class SelfCrawlingAgent:
         all_extracted: List[Any] = []
         pages_visited = 0
         spec_inferred = False
+        total_errors = []
 
         logger.info(
             f"[full_site] max_pages={max_pages} max_depth={max_depth} "
@@ -639,6 +651,20 @@ class SelfCrawlingAgent:
                     f"url={current_url}"
                 )
 
+                # 保存感知证据
+                if sense_result.get('html_snapshot'):
+                    self.evidence_storage.save_html(
+                        sense_result['html_snapshot'][:100000],
+                        f'page_{pages_visited}_snapshot.html'
+                    )
+                if sense_result.get('screenshot'):
+                    try:
+                        import base64
+                        img_data = base64.b64decode(sense_result['screenshot'])
+                        self.evidence_storage.save_screenshot(img_data, f'page_{pages_visited}.png')
+                    except Exception:
+                        pass
+
                 # Spec 自动推断（仅首页且尚未推断）
                 if not spec_inferred and features:
                     self._apply_spec_inference(features)
@@ -659,6 +685,15 @@ class SelfCrawlingAgent:
                         'llm_client': self.llm_client
                     }
                 )
+
+                # 保存规划证据
+                if plan_result.get('generated_code'):
+                    self.evidence_collector.collect_plan(
+                        plan_result['generated_code'],
+                        str(plan_result.get('strategy', {})),
+                        page_id=f'page_{pages_visited}'
+                    )
+
             except Exception as e:
                 logger.warning(f"规划失败 {current_url}: {e}")
                 plan_result = {'success': False, 'selectors': {}, 'strategy': {}}
@@ -683,11 +718,128 @@ class SelfCrawlingAgent:
                 )
             except Exception as e:
                 logger.warning(f"提取失败 {current_url}: {e}")
+                page_data = []
+                act_result = {'extracted_data': []}
+
+            # Verify - 对单个页面的数据进行验证
+            try:
+                verify_result = await self.agent_pool.execute_capability(
+                    'verify',
+                    {
+                        'extracted_data': page_data,
+                        'spec': self.spec,
+                        'extraction_metrics': act_result.get('extraction_metrics', {})
+                    }
+                )
+
+                quality_score = verify_result.get('quality_score', 0)
+                logger.info(
+                    f"[full_site] 页面验证 - 质量分数: {quality_score:.2f} "
+                    f"有效数据: {verify_result.get('valid_items', 0)}/{len(page_data)}"
+                )
+
+                # 保存验证证据
+                self.evidence_collector.collect_verification(
+                    page_data,
+                    verify_result,
+                    url=current_url,
+                    page_id=f'page_{pages_visited}'
+                )
+
+                # 将页面验证结果添加到状态中
+                page_verification = {
+                    'url': current_url,
+                    'quality_score': quality_score,
+                    'valid_items': verify_result.get('valid_items', 0),
+                    'total_items': len(page_data),
+                    'issues': verify_result.get('verification_result', {}).get('issues', [])
+                }
+
+                current_state = await self.state_manager.get_state()
+                page_verifications = current_state.get('page_verifications', [])
+                page_verifications.append(page_verification)
+                self.state_manager.update_state_sync({
+                    'page_verifications': page_verifications
+                })
+
+            except Exception as e:
+                logger.warning(f"验证失败 {current_url}: {e}")
+                verify_result = {'quality_score': 0.0, 'valid_items': 0}
+
+            # Judge - 基于单页结果做出决策
+            try:
+                judge_result = await self.agent_pool.execute_capability(
+                    'judge',
+                    {
+                        'quality_score': verify_result.get('quality_score', 0),
+                        'iteration': pages_visited,  # 用页面访问次数代替迭代次数
+                        'max_iterations': max_pages,
+                        'errors': total_errors,
+                        'spec': self.spec,
+                        'llm_client': self.llm_client,
+                        'extracted_data': page_data,
+                        'current_url': current_url  # 提供当前 URL 信息
+                    }
+                )
+
+                decision = judge_result.get('decision', 'continue')
+                reasoning = judge_result.get('reasoning', '')
+
+                logger.info(f"[full_site] 页面决策: {decision} - {reasoning[:50]}...")
+
+                # 保存决策证据
+                self.evidence_collector.collect_judgment(
+                    judge_result,
+                    page_id=f'page_{pages_visited}'
+                )
+
+                # 如果决策是终止，跳出循环
+                if decision == 'terminate':
+                    logger.info(f"[full_site] 决策终止爬取流程")
+                    break
+
+            except Exception as e:
+                logger.warning(f"页面决策失败 {current_url}: {e}")
+                decision = 'continue'  # 默认继续
+
+            # Reflect - 如果质量较低或遇到问题，进行反思
+            try:
+                # 只在质量低于阈值或遇到错误时才进行反思
+                quality_score = verify_result.get('quality_score', 0)
+                if quality_score < 0.5 or len(page_data) == 0:
+                    reflect_result = await self.agent_pool.execute_capability(
+                        'reflect',
+                        {
+                            'execution_history': [{'url': current_url, 'result': act_result}],
+                            'errors': total_errors,
+                            'quality_score': quality_score,
+                            'spec': self.spec,
+                            'llm_client': self.llm_client,
+                            'current_url': current_url
+                        }
+                    )
+
+                    logger.info(f"[full_site] 页面反思完成 - {reflect_result.get('suggested_action', 'no_action')}")
+
+                    # 保存反思证据
+                    self.evidence_collector.collect_reflection(
+                        reflect_result,
+                        page_id=f'page_{pages_visited}'
+                    )
+
+                    # 根据反思结果可能更新策略
+                    new_selectors = reflect_result.get('new_selectors', {})
+                    if new_selectors:
+                        logger.info(f"[full_site] 更新选择器: {list(new_selectors.keys())}")
+                        plan_result['selectors'].update(new_selectors)
+
+            except Exception as e:
+                logger.warning(f"页面反思失败 {current_url}: {e}")
 
             # Explore（发现子链接 → 推入 Frontier）
             if current_depth < max_depth:
                 try:
-                    await explore_agent.execute({
+                    explore_result = await explore_agent.execute({
                         'browser': self.browser,
                         'current_url': current_url,
                         'base_url': start_url,
@@ -695,12 +847,58 @@ class SelfCrawlingAgent:
                         'max_depth': max_depth,
                         'frontier': frontier,
                     })
+
+                    # 保存探索证据
+                    if 'links' in explore_result:
+                        self.evidence_collector.collect_explore_data(
+                            explore_result,
+                            url=current_url,
+                            page_id=f'page_{pages_visited}'
+                        )
+
                     logger.debug(
                         f"[full_site] frontier queue={frontier.queue_size()} "
                         f"visited={frontier.visited_count()}"
                     )
                 except Exception as e:
                     logger.warning(f"探索失败 {current_url}: {e}")
+
+        # 对整个站点的提取结果进行最终的验证和评估
+        final_verify_result = await self.agent_pool.execute_capability(
+            'verify',
+            {
+                'extracted_data': all_extracted,
+                'spec': self.spec,
+                'extraction_metrics': {}
+            }
+        )
+
+        # 计算整体质量分数，考虑页面质量和覆盖率等多个因素
+        page_verifications = (await self.state_manager.get_state()).get('page_verifications', [])
+
+        if page_verifications:
+            # 计算平均页面质量分数
+            avg_page_quality = sum(v.get('quality_score', 0) for v in page_verifications) / len(page_verifications)
+
+            # 计算整体数据有效性
+            total_valid_items = sum(v.get('valid_items', 0) for v in page_verifications)
+            total_items = sum(v.get('total_items', 0) for v in page_verifications)
+            overall_validity_ratio = total_valid_items / total_items if total_items > 0 else 0
+
+            # 计算综合质量分数（平衡页面质量、数据有效性和覆盖范围）
+            final_quality_score = (
+                avg_page_quality * 0.4 +  # 页面平均质量权重40%
+                overall_validity_ratio * 0.4 +  # 整体有效性权重40%
+                min(1.0, len(all_extracted) / max_pages * 0.2)  # 数据覆盖率权重20%，最多贡献0.2分
+            )
+        else:
+            # 如果没有页面验证数据，基于提取数据总量和验证结果
+            final_quality_score = final_verify_result.get('quality_score', 0) if all_extracted else 0.0
+
+        logger.info(
+            f"[full_site] 最终验证 - 质量分数: {final_quality_score:.2f} "
+            f"总数据: {len(all_extracted)} 条，页面验证数: {len(page_verifications)}"
+        )
 
         stats = frontier.get_stats()
         logger.info(
@@ -716,7 +914,10 @@ class SelfCrawlingAgent:
             'extracted_data': all_extracted,
             'pages_visited': pages_visited,
             'frontier_stats': stats,
-            'quality_score': 1.0 if all_extracted else 0.0,
+            'quality_score': final_quality_score,
+            'final_verification': final_verify_result,
+            'page_verifications': page_verifications,
+            'errors': total_errors
         }
 
     # ------------------------------------------------------------------

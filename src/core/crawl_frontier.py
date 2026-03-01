@@ -33,12 +33,20 @@ def canonicalize_url(url: str) -> str:
     """
     规范化 URL：
     - 移除 fragment（#...）
-    - 规范化路径（末尾斜杠统一保留，避免重复）
+    - 规范化路径（移除 . 和 .. 段，统一末尾斜杠处理）
     - 保留查询字符串（按键名排序以去重等价 URL）
     """
     parsed = urlparse(url)
-    # 移除 fragment
-    # 对查询字符串排序，避免参数顺序不同导致重复
+    # 规范化路径，移除 . 和 .. 段
+    norm_path = parsed.path
+    if '..' in norm_path or '.' in norm_path:
+        from posixpath import normpath
+        norm_path = normpath(parsed.path)
+        # 如果原始路径以 / 结尾且规范化后没有 / 结尾，则添加
+        if parsed.path.endswith('/') and not norm_path.endswith('/'):
+            norm_path += '/'
+
+    # 处理查询字符串，排序参数
     query = parsed.query
     if query:
         params = parse_qs(query, keep_blank_values=True)
@@ -49,12 +57,32 @@ def canonicalize_url(url: str) -> str:
     normalized = urlunparse((
         parsed.scheme,
         parsed.netloc.lower(),
-        parsed.path,
+        norm_path,
         parsed.params,
         sorted_query,
         '',  # 移除 fragment
     ))
     return normalized
+
+
+def normalize_and_dedupe_urls(urls: List[str]) -> List[str]:
+    """
+    规范化 URL 列表并去重
+
+    Args:
+        urls: 原始 URL 列表
+
+    Returns:
+        规范化并去重后的 URL 列表，保持原有顺序
+    """
+    seen_normalized = set()
+    result = []
+    for url in urls:
+        normalized = canonicalize_url(url)
+        if normalized not in seen_normalized:
+            seen_normalized.add(normalized)
+            result.append(normalized)
+    return result
 
 
 def _is_static_resource(url: str) -> bool:
@@ -255,7 +283,11 @@ class CrawlFrontier:
         """
         resolve_base = base_url or self.base_url
         pushed = 0
-        for url in urls:
+
+        # Normalize and deduplicate URLs before processing
+        normalized_urls = normalize_and_dedupe_urls(urls)
+
+        for url in normalized_urls:
             if resolve_base:
                 url = urljoin(resolve_base, url)
             if self.push(url, depth=depth, priority=priority):

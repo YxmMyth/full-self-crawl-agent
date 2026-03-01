@@ -14,8 +14,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
+
+logger = logging.getLogger('spa_handler')
 
 try:
     from bs4 import BeautifulSoup
@@ -139,8 +142,14 @@ class SPAHandler:
                 })
                 if url not in self._candidate_urls:
                     self._candidate_urls.append(url)
-            except Exception:
-                pass  # 忽略解析失败的响应
+            except json.JSONDecodeError as e:
+                # 记录JSON解析错误，但仍允许其他响应处理
+                print(f"JSON解析错误: {e} - URL: {url if 'url' in locals() else 'unknown'}")
+                logger.warning(f"SPA Handler JSON解析错误 for {url if 'url' in locals() else 'unknown'}: {e}")
+            except Exception as e:
+                # 记录其他错误，但仍允许其他响应处理
+                print(f"响应拦截错误: {e} - URL: {url if 'url' in locals() else 'unknown'}")
+                logger.warning(f"SPA Handler 响应拦截错误 for {url if 'url' in locals() else 'unknown'}: {e}", exc_info=True)
 
         page.on('response', _on_response)
 
@@ -182,6 +191,7 @@ class SPAHandler:
                         if (!resp.ok) return null;
                         return await resp.json();
                     } catch (e) {
+                        console.error(`SPA Handler fetch error for ${url}:`, e);
                         return null;
                     }
                 }""",
@@ -190,7 +200,8 @@ class SPAHandler:
             if result is None:
                 return None
             return _extract_list_from_json(result)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Direct API fetch failed for {api_url}: {e}", exc_info=True)
             return None
 
     async def try_candidate_apis(self, page: Any, base_url: str) -> Optional[List[Dict]]:
@@ -244,33 +255,45 @@ class SPAHandler:
 
         soup = BeautifulSoup(html, 'html.parser')
 
-        # 找到第一个有足够重复子元素的容器
-        for tag_name in ['ul', 'ol', 'div', 'section', 'table']:
+        # 定义优先级顺序的容器标签
+        container_tags = ['ul', 'ol', 'div', 'section', 'article', 'table', 'li']
+
+        # 查找最有可能包含重复项的容器
+        for tag_name in container_tags:
             containers = soup.find_all(tag_name)
+
+            # 筛选出有足够重复子元素的容器
             for container in containers:
-                children = [c for c in container.children
-                            if hasattr(c, 'name') and c.name]
-                if len(children) < 3:
-                    continue
+                # 获取直接子元素（避免嵌套重复计算）
+                children = [child for child in container.children
+                           if hasattr(child, 'name') and child.name and child.name != '[document]']
 
-                records = []
-                for child in children:
-                    text = child.get_text(separator=' ', strip=True)
-                    if text:
-                        record: Dict[str, Any] = {'text': text}
-                        # 若提供了字段定义，尝试按选择器匹配
-                        if target_fields:
-                            for field_def in target_fields:
-                                selector = field_def.get('selector', '')
-                                field_name = field_def.get('name', 'field')
-                                if selector:
-                                    found = child.select_one(selector)
-                                    if found:
-                                        record[field_name] = found.get_text(strip=True)
-                        records.append(record)
+                # 需要至少3个子元素才算作重复结构
+                if len(children) >= 3:
+                    records = []
 
-                if records:
-                    return records
+                    for child in children:
+                        # 快速提取文本内容
+                        text = child.get_text(separator=' ', strip=True)
+                        if text:
+                            record: Dict[str, Any] = {'text': text}
+
+                            # 如果提供了目标字段，尝试按选择器提取具体字段
+                            if target_fields:
+                                for field_def in target_fields:
+                                    selector = field_def.get('selector', '')
+                                    field_name = field_def.get('name', 'field')
+
+                                    if selector:
+                                        found_elements = child.select(selector)
+                                        if found_elements:
+                                            # 提取第一个匹配元素的文本
+                                            record[field_name] = found_elements[0].get_text(strip=True)
+
+                            records.append(record)
+
+                    if records:
+                        return records
 
         return []
 

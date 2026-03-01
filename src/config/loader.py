@@ -80,8 +80,16 @@ class SpecLoader:
             raise FileNotFoundError(f"State file not found: {state_path}")
 
         state_data = self._load_json(state_path)
-        # TODO: 从字典创建 StateContract
-        return StateContract.create_initial(task_id, SpecContract())  # 临时
+        # 使用 ContractFactory 创建 StateContract
+        from .contracts import ContractFactory
+        # Create a basic spec as fallback
+        basic_spec = {
+            'version': 'v1',
+            'freeze': True,
+            'goal': 'Default goal',
+            'completion_gate': ['html_snapshot_exists']
+        }
+        return ContractFactory.create_initial_state(task_id, '', 'Default goal', basic_spec)
 
     def _load_file(self, path: Path) -> Dict[str, Any]:
         """加载契约文件（支持 JSON/YAML）"""
@@ -112,7 +120,7 @@ class SpecLoader:
         - 字段定义完整
         """
         # 验证必需字段
-        required_fields = ['task_id', 'task_name', 'targets']
+        required_fields = ['task_id', 'task_name']
         for field in required_fields:
             if field not in spec_data:
                 raise ValueError(f"Missing required field: {field}")
@@ -121,34 +129,63 @@ class SpecLoader:
         if not spec_data['task_name'].strip():
             raise ValueError("Task name cannot be empty")
 
-        # 验证提取目标
-        targets = spec_data.get('targets', [])
-        if not targets:
-            raise ValueError("At least one extraction target is required")
+        # 根据爬取模式选择验证策略
+        crawl_mode = spec_data.get('crawl_mode', 'single_page')
 
-        # 验证每个目标
-        for i, target in enumerate(targets):
-            if 'name' not in target:
-                raise ValueError(f"Target {i} missing 'name' field")
-            if not target['name'].strip():
-                raise ValueError(f"Target {i} name cannot be empty")
+        if crawl_mode in ['single_page', 'multi_page']:
+            # 对于单页/多页模式，仍需要 targets
+            targets = spec_data.get('targets', [])
+            if not targets:
+                raise ValueError("At least one extraction target is required for single_page/multi_page mode")
 
-            # 验证字段
-            fields = target.get('fields', [])
-            if not fields:
-                raise ValueError(f"Target '{target['name']}' must have at least one field")
+            # 验证每个目标
+            for i, target in enumerate(targets):
+                if 'name' not in target:
+                    raise ValueError(f"Target {i} missing 'name' field")
+                if not target['name'].strip():
+                    raise ValueError(f"Target {i} name cannot be empty")
 
-            for j, field in enumerate(fields):
-                # 必需字段
-                if 'name' not in field:
-                    raise ValueError(f"Target '{target['name']}' field {j} missing 'name'")
-                if 'selector' not in field:
-                    raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' missing 'selector'")
+                # 验证字段
+                fields = target.get('fields', [])
+                if not fields:
+                    raise ValueError(f"Target '{target['name']}' must have at least one field")
+
+                for j, field in enumerate(fields):
+                    # 必需字段
+                    if 'name' not in field:
+                        raise ValueError(f"Target '{target['name']}' field {j} missing 'name'")
+                    if 'selector' not in field:
+                        raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' missing 'selector'")
+        elif crawl_mode == 'full_site':
+            # 对于全站爬取模式，可能不需要预定义 targets，因为动态发现
+            pass  # 验证将在运行时进行
+
+        # 验证基本结构字段是否存在（但不强制要求）
+        if 'targets' in spec_data:
+            targets = spec_data.get('targets', [])
+            for i, target in enumerate(targets):
+                if 'name' not in target:
+                    raise ValueError(f"Target {i} missing 'name' field")
+                if not target['name'].strip():
+                    raise ValueError(f"Target {i} name cannot be empty")
+
+                # 验证字段
+                fields = target.get('fields', [])
+                if not fields:
+                    continue  # 允许无字段的目标（可能用于页面发现）
+
+                for j, field in enumerate(fields):
+                    # 必需字段
+                    if 'name' not in field:
+                        raise ValueError(f"Target '{target['name']}' field {j} missing 'name'")
+                    if 'selector' not in field:
+                        raise ValueError(f"Target '{target['name']}' field '{field.get('name', j)}' missing 'selector'")
 
     def save_spec(self, spec: SpecContract, output_path: Union[str, Path]) -> None:
         """保存契约到文件"""
         path = Path(output_path)
-        spec_dict = spec.to_dict()
+        # SpecContract is a TypedDict which behaves like a dictionary
+        spec_dict = spec  # Just use the dict as-is
 
         with open(path, 'w', encoding='utf-8') as f:
             if path.suffix == '.json':

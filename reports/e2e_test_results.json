@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-02-28T00:26:39.549892",
+  "total_sites": 1,
+  "results": [
+    {
+      "site_id": "site_05_arxiv",
+      "site_name": "arXiv 学术论文",
+      "url": "https://arxiv.org/list/cs/recent",
+      "description": "学术论文：PDF下载/摘要/作者",
+      "expected_fields": [
+        "title",
+        "authors",
+        "pdf_url"
+      ],
+      "start_time": "2026-02-28T00:13:44.239712",
+      "status": "completed",
+      "success": false,
+      "extracted_count": 0,
+      "quality_score": 0.0,
+      "iterations": 3,
+      "error": "超过最大迭代次数",
+      "sample_data": [],
+      "extracted_fields": [],
+      "missing_fields": [],
+      "execution_time_seconds": 775.31,
+      "end_time": "2026-02-28T00:26:39.549430"
+    }
+  ]
+}

@@ -1,24 +1,17 @@
 """Agents module - 智能体"""
 from .base import (
     AgentPool,
-    SenseAgent,
-    PlanAgent,
-    ActAgent,
-    VerifyAgent,
-    JudgeAgent,
-    ExploreAgent,
-    ReflectAgent
+    AgentInterface,
+    AgentCapability,
+    DegradationTracker
 )
-from .spa_handler import SPAHandler
+# Note: Individual agent classes are not imported at the package level
+# to avoid circular dependencies. Import specific agents individually
+# from their respective modules.
 
 __all__ = [
     'AgentPool',
-    'SenseAgent',
-    'PlanAgent',
-    'ActAgent',
-    'VerifyAgent',
-    'JudgeAgent',
-    'ExploreAgent',
-    'ReflectAgent',
-    'SPAHandler',
+    'AgentInterface',
+    'AgentCapability',
+    'DegradationTracker',
 ]
