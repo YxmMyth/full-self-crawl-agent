@@ -170,16 +170,30 @@ class SenseAgent(AgentInterface):
         html = await browser.get_html()
         screenshot = await browser.take_screenshot()
 
-        # 2. 程序快速分析（复用 FeatureDetector）
+        # 2. 程序快速分析（复用 FeatureDetector v2）
         from src.core.smart_router import FeatureDetector
         detector = FeatureDetector()
         features = detector.analyze(html)
 
-        # 3. 分析页面结构
-        structure = self._analyze_structure(html)
-        features.update(structure)
+        # 3. SPA 智能等待（SPA 页面等待 JS 渲染完成）
+        if features.get('is_spa') and browser and hasattr(browser, 'page') and browser.page:
+            try:
+                await browser.page.wait_for_load_state('networkidle', timeout=5000)
+                html = await browser.get_html()
+                features = detector.analyze(html)
+            except Exception:
+                pass  # 超时时继续使用已有内容
 
-        # 4. LLM 深度分析（如有 LLM 客户端）
+        # 4. 整合 HTMLParser.detect_pagination 结果
+        from src.tools.parser import HTMLParser
+        parser = HTMLParser(html)
+        pagination_info = parser.detect_pagination()
+        features['pagination_info'] = pagination_info
+        # 若 FeatureDetector 未检测到分页但 HTMLParser 检测到，同步更新
+        if pagination_info.get('has_next') and not features.get('has_pagination'):
+            features['has_pagination'] = True
+
+        # 5. LLM 深度分析（如有 LLM 客户端）
         if llm_client:
             try:
                 deep_analysis = await self._llm_analyze(html, spec, llm_client)
@@ -194,7 +208,7 @@ class SenseAgent(AgentInterface):
                 if degradation_info.get('should_warn'):
                     print(f"警告: {degradation_info['message']}")
 
-        # 5. 检测反爬
+        # 6. 检测反爬
         anti_bot_info = self._detect_anti_bot(html)
 
         result = {
@@ -282,13 +296,22 @@ class SenseAgent(AgentInterface):
         """使用 LLM 增强分析 - 推理任务，使用 DeepSeek"""
         goal = spec.get('goal', '未知') if spec else '未知'
 
+        # 提取 <body> 内容作为更有意义的采样（过滤 <head> 中的脚本/样式）
+        try:
+            from bs4 import BeautifulSoup
+            _soup = BeautifulSoup(html, 'html.parser')
+            body = _soup.find('body')
+            html_sample = body.get_text(separator='\n', strip=True)[:3000] if body else html[:3000]
+        except Exception:
+            html_sample = html[:3000]
+
         prompt = f"""分析以下 HTML 页面，提取关键信息：
 
 目标：{goal}
 
-HTML 片段：
+页面正文内容：
 ```
-{html[:3000]}
+{html_sample}
 ```
 
 请输出 JSON 格式：
@@ -1464,7 +1487,7 @@ class ActAgent(AgentInterface):
     async def _handle_pagination(self, browser, initial_data, strategy, selectors,
                                   metrics: Optional[ExtractionMetrics] = None,
                                   required_fields: Optional[set] = None):
-        """处理分页（改进版：支持去重和滚动检测）"""
+        """处理分页（改进版：DOM next-url提取、语义点击、visited防循环）"""
         all_data = initial_data.copy()
         max_pages = strategy.get('max_pages', 5)
         pagination_type = strategy.get('pagination_strategy', 'click')
@@ -1479,19 +1502,38 @@ class ActAgent(AgentInterface):
 
         seen_keys = {get_item_key(item) for item in all_data}
         required_fields = required_fields or set()
+        # visited_urls: 防止 URL 分页时死循环
+        visited_urls: set = set()
+        if hasattr(browser, 'get_current_url'):
+            try:
+                _init_url = await browser.get_current_url()
+                visited_urls.add(_init_url)
+            except Exception:
+                pass
 
         for page_num in range(max_pages - 1):
             try:
                 prev_data_count = len(all_data)
 
                 if pagination_type == 'click':
+                    # 1. 优先使用策略指定选择器
                     next_btn = await browser.page.query_selector(next_selector)
+
+                    # 2. DOM rel="next" 链接提取
+                    if not next_btn:
+                        next_btn = await browser.page.query_selector('a[rel="next"]')
+
+                    # 3. 语义文本匹配（下一页 / Next / »）
+                    if not next_btn:
+                        next_btn = await self._find_semantic_next_button(browser)
+
                     if next_btn:
                         await next_btn.click()
                         await browser.page.wait_for_load_state('networkidle')
-                        await browser.page.wait_for_timeout(1000)  # 等待内容加载
+                        await browser.page.wait_for_timeout(1000)
                     else:
                         break
+
                 elif pagination_type == 'scroll':
                     # 滚动前记录位置
                     prev_scroll_height = await browser.page.evaluate('document.body.scrollHeight')
@@ -1506,16 +1548,26 @@ class ActAgent(AgentInterface):
                         break
 
                 elif pagination_type == 'url':
-                    # URL 分页逻辑
                     current_url = await browser.get_current_url()
-                    next_url = self._get_next_page_url(current_url, page_num + 2)
-                    if next_url:
-                        await browser.navigate(next_url)
-                    else:
+
+                    # 1. DOM next-url 提取（最可靠）
+                    next_url = await self._extract_dom_next_url(browser)
+
+                    # 2. URL 参数推断
+                    if not next_url:
+                        next_url = self._get_next_page_url(current_url, page_num + 2)
+
+                    # 3. 模式发现兜底
+                    if not next_url:
+                        html_for_pattern = await browser.get_html()
+                        next_url = self._discover_next_url_pattern(html_for_pattern, current_url, page_num + 2)
+
+                    if not next_url or next_url in visited_urls:
                         break
+                    visited_urls.add(next_url)
+                    await browser.navigate(next_url)
 
                 # 提取新数据
-                html = await browser.get_html()
                 new_data = await self._extract_with_selectors(
                     browser, selectors, strategy, metrics, required_fields
                 )
@@ -1538,40 +1590,150 @@ class ActAgent(AgentInterface):
 
         return all_data
 
+    async def _extract_dom_next_url(self, browser) -> Optional[str]:
+        """从 DOM 中提取 rel=next 链接的 URL"""
+        try:
+            # 检查 <a rel="next"> 或 <link rel="next">
+            for selector in ('a[rel~="next"]', 'link[rel~="next"]'):
+                elem = await browser.page.query_selector(selector)
+                if elem:
+                    href = await elem.get_attribute('href')
+                    if href:
+                        from urllib.parse import urljoin
+                        current = await browser.get_current_url()
+                        return urljoin(current, href)
+        except Exception:
+            pass
+        return None
+
+    async def _find_semantic_next_button(self, browser):
+        """通过语义文本寻找"下一页"按钮/链接"""
+        _next_texts = ['下一页', 'next', '›', '»', 'next page', '下页']
+        try:
+            for text in _next_texts:
+                # 用 xpath 匹配大小写不敏感的文本
+                xpath = (
+                    f'//a[translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ",'
+                    f'"abcdefghijklmnopqrstuvwxyz")="{text.lower()}"]'
+                    f'| //button[translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ",'
+                    f'"abcdefghijklmnopqrstuvwxyz")="{text.lower()}"]'
+                )
+                elem = await browser.page.query_selector(f'xpath={xpath}')
+                if elem:
+                    return elem
+        except Exception:
+            pass
+        return None
+
     def _get_next_page_url(self, current_url: str, next_page: int) -> Optional[str]:
         """
         生成下一页 URL
 
         支持:
-        - ?page=N 格式
-        - /page/N 格式
-        - /N 格式
+        - ?page=N / ?p=N / ?pageNum=N / ?pageNo=N 等常见分页参数
+        - ?offset=N（按 page_size 推算）
+        - /page/N 路径格式
+        - 路径末尾数字 /N
         """
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        import re
 
         parsed = urlparse(current_url)
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
 
-        # 尝试 ?page=N 格式
-        query_params = parse_qs(parsed.query)
-        if 'page' in query_params:
-            query_params['page'] = [str(next_page)]
-            new_query = urlencode(query_params, doseq=True)
-            return urlunparse(parsed._replace(query=new_query))
+        # 常见页码参数（优先级由高到低）
+        _page_params = ['page', 'p', 'pageNum', 'pageNo', 'pg', 'pn', 'currentPage']
+        for param in _page_params:
+            if param in query_params:
+                query_params[param] = [str(next_page)]
+                new_query = urlencode(query_params, doseq=True)
+                return urlunparse(parsed._replace(query=new_query))
 
-        # 尝试 /page/N 或 /N 格式
+        # offset 参数（需要推算 page_size）
+        _offset_params = ['offset', 'start', 'from', 'skip']
+        for param in _offset_params:
+            if param in query_params:
+                try:
+                    current_offset = int(query_params[param][0])
+                    # 尝试从其他参数推断 page_size
+                    page_size = None
+                    for size_key in ('size', 'limit', 'pageSize', 'per_page', 'perPage', 'rows', 'count'):
+                        if size_key in query_params:
+                            page_size = int(query_params[size_key][0])
+                            break
+                    # 如果 offset 为 0 且 next_page==2，page_size 未知，跳过
+                    if page_size and page_size > 0:
+                        new_offset = page_size * (next_page - 1)
+                        query_params[param] = [str(new_offset)]
+                        new_query = urlencode(query_params, doseq=True)
+                        return urlunparse(parsed._replace(query=new_query))
+                except (ValueError, TypeError):
+                    pass
+
+        # 路径末尾数字 /N 或 /page/N 格式
         path_parts = parsed.path.rstrip('/').split('/')
+
+        # /page/N 路径
+        if 'page' in parsed.path.lower():
+            new_path = re.sub(r'(?<=/page/)\d+', str(next_page), parsed.path, flags=re.IGNORECASE)
+            if new_path != parsed.path:
+                return urlunparse(parsed._replace(path=new_path))
+
+        # 路径末尾纯数字
         if path_parts and path_parts[-1].isdigit():
-            # 替换最后的数字
             path_parts[-1] = str(next_page)
             new_path = '/'.join(path_parts)
             return urlunparse(parsed._replace(path=new_path))
 
-        # 尝试添加 /page/N
-        if 'page' in parsed.path.lower():
-            # 已有 page，替换数字
-            import re
-            new_path = re.sub(r'/page/\d+', f'/page/{next_page}', parsed.path)
-            return urlunparse(parsed._replace(path=new_path))
+        return None
+
+    def _discover_next_url_pattern(self, html: str, current_url: str, next_page: int) -> Optional[str]:
+        """
+        从 HTML 中发现分页 URL 模式，推断下一页 URL（兜底策略）
+        """
+        from urllib.parse import urlparse, urljoin
+        import re
+
+        parsed = urlparse(current_url)
+
+        # 找所有 a[href] 链接，寻找含页码参数的模式
+        href_pattern = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
+        hrefs = href_pattern.findall(html)
+
+        # 常见页码 query 参数模式
+        page_param_pattern = re.compile(
+            r'[?&](page|p|pageNum|pageNo|pg|pn|currentPage)=(\d+)', re.IGNORECASE
+        )
+
+        candidate_pages: Dict[str, List[int]] = {}
+        for href in hrefs:
+            m = page_param_pattern.search(href)
+            if m:
+                param_name = m.group(1)
+                page_num = int(m.group(2))
+                candidate_pages.setdefault(param_name, []).append(page_num)
+
+        if candidate_pages:
+            # 选出出现次数最多的参数
+            best_param = max(candidate_pages, key=lambda k: len(candidate_pages[k]))
+            # 找到最大页码，推断下一页
+            max_found = max(candidate_pages[best_param])
+            if next_page <= max_found + 1:
+                from urllib.parse import parse_qs, urlencode, urlunparse
+                from urllib.parse import urlparse as _urlparse
+                _p = _urlparse(current_url)
+                qp = parse_qs(_p.query, keep_blank_values=True)
+                qp[best_param] = [str(next_page)]
+                return urlunparse(_p._replace(query=urlencode(qp, doseq=True)))
+
+        # 路径分页模式 /page/N
+        path_page_pattern = re.compile(r'/page/(\d+)', re.IGNORECASE)
+        for href in hrefs:
+            if path_page_pattern.search(href):
+                abs_url = urljoin(current_url, href)
+                new_path = path_page_pattern.sub(f'/page/{next_page}', urlparse(abs_url).path)
+                from urllib.parse import urlunparse
+                return urlunparse(urlparse(abs_url)._replace(path=new_path))
 
         return None
 

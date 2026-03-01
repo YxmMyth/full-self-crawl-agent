@@ -1,5 +1,8 @@
 """Tools module - 工具层"""
-from .browser import BrowserTool
+try:
+    from .browser import BrowserTool
+except ImportError:
+    BrowserTool = None  # type: ignore[assignment,misc]
 from .llm_client import LLMClient, CachedLLMClient
 from .parser import HTMLParser, SelectorBuilder
 from .storage import (
