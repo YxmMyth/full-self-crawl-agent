@@ -228,6 +228,122 @@ class PlanAgent(AgentInterface):
 
         return '\n'.join(code_parts)
 
+    def _fallback_strategy(self, structure: Dict, spec: Dict) -> Dict[str, Any]:
+        """
+        降级策略：为缺少 selector 的字段生成默认选择器。
+
+        Returns:
+            {'selectors': {...}, 'selector_info': {...}}
+        """
+        selectors = {}
+        selector_info = {}
+
+        for target in spec.get('targets', []):
+            for field in target.get('fields', []):
+                name = field.get('name', '')
+                if field.get('selector'):
+                    selectors[name] = field['selector']
+                    selector_info[name] = 'from_spec'
+                else:
+                    description = field.get('description', '')
+                    selectors[name] = self._generate_default_selector(name, description)
+                    selector_info[name] = 'generated'
+
+        return {'selectors': selectors, 'selector_info': selector_info}
+
+    def _generate_default_selector(self, field_name: str, description: str = '') -> str:
+        """根据字段名称和描述生成默认 CSS 选择器。"""
+        name_lower = field_name.lower()
+        desc_lower = description.lower()
+
+        if 'title' in name_lower or '标题' in desc_lower or 'title' in desc_lower:
+            return 'h1, h2, h3, [class*="title"], [class*="headline"]'
+        if 'price' in name_lower or '价格' in desc_lower or 'price' in desc_lower:
+            return '[class*="price"], [class*="cost"], .price'
+        if 'author' in name_lower or '作者' in desc_lower or 'author' in desc_lower:
+            return '[class*="author"], [class*="user"], .byline, [rel="author"]'
+        if 'date' in name_lower or '日期' in desc_lower or 'date' in desc_lower:
+            return '[datetime], time, [class*="date"], [class*="time"]'
+        if 'desc' in name_lower or 'content' in name_lower:
+            return 'p, [class*="desc"], [class*="content"]'
+
+        # 通用：将字段名转为 kebab-case 选择器
+        kebab = re.sub(r'[_\s]+', '-', field_name.lower())
+        return f'[class*="{kebab}"], #{kebab}, .{kebab}'
+
+    def _extract_html_context(self, html: str, targets: List[Dict]) -> str:
+        """从 HTML 中提取与目标字段相关的上下文文本。"""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        context_parts = []
+        field_names = [
+            f.get('name', '')
+            for t in targets for f in t.get('fields', [])
+        ]
+
+        for tag in soup.find_all(['h1', 'h2', 'h3', 'span', 'div', 'p', 'a'], limit=100):
+            text = tag.get_text(strip=True)
+            if not text:
+                continue
+            classes = ' '.join(tag.get('class', []))
+            # 如果标签的文字或类名与字段相关则收录
+            for name in field_names:
+                if name.lower() in classes.lower() or name.lower() in text.lower():
+                    context_parts.append(f'{tag.name}.{classes}: {text[:100]}')
+                    break
+
+        return '\n'.join(context_parts[:50])
+
+    async def _generate_conservative(self, structure: Dict, spec: Dict,
+                                     llm_client, html: str) -> Dict[str, Any]:
+        """保守策略：使用宽泛选择器，优先从 spec 字段或语义推断。"""
+        selectors = {}
+        for target in spec.get('targets', []):
+            for field in target.get('fields', []):
+                name = field.get('name', '')
+                if field.get('selector'):
+                    selectors[name] = field['selector']
+                else:
+                    selectors[name] = self._generate_default_selector(
+                        name, field.get('description', ''))
+
+        return {
+            'success': True,
+            'strategy_type': 'conservative',
+            'selectors': selectors,
+        }
+
+    async def _generate_aggressive(self, structure: Dict, spec: Dict,
+                                   llm_client, html: str) -> Dict[str, Any]:
+        """激进策略：直接分析 HTML 内容匹配字段名/描述。"""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+
+        selectors = {}
+        for target in spec.get('targets', []):
+            for field in target.get('fields', []):
+                name = field.get('name', '')
+                description = field.get('description', name)
+                # 尝试在 HTML 中找到包含字段名或描述关键词的元素
+                for tag in soup.find_all(['h1', 'h2', 'h3', 'span', 'div', 'p'], limit=200):
+                    classes = ' '.join(tag.get('class', []))
+                    tag_id = tag.get('id', '')
+                    if (name.lower() in classes.lower() or
+                            name.lower() in tag_id.lower() or
+                            description.lower() in tag.get_text(strip=True).lower()):
+                        class_sel = f'.{classes.split()[0]}' if tag.get('class') else tag.name
+                        selectors[name] = class_sel
+                        break
+                else:
+                    selectors[name] = self._generate_default_selector(name, description)
+
+        return {
+            'success': True,
+            'strategy_type': 'aggressive',
+            'selectors': selectors,
+        }
+
     def get_description(self) -> str:
         return "根据页面结构规划提取策略和生成选择器"
 

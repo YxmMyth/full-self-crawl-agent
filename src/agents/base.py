@@ -141,7 +141,9 @@ class AgentPool:
         # 共享的降级追踪器
         self.degradation_tracker = DegradationTracker()
 
-        # Initialize agents first
+        from .spa_handler import SPAHandler
+
+        # Initialize agents
         self.agents = {
             AgentCapability.SENSE: SenseAgent(self.degradation_tracker),
             AgentCapability.PLAN: PlanAgent(llm_client, self.degradation_tracker),
@@ -150,26 +152,8 @@ class AgentPool:
             AgentCapability.JUDGE: JudgeAgent(llm_client, self.degradation_tracker),
             AgentCapability.EXPLORE: ExploreAgent(),
             AgentCapability.REFLECT: ReflectAgent(llm_client, self.degradation_tracker),
+            AgentCapability.SPA_HANDLE: SPAHandler(llm_client),
         }
-
-        # Lazy initialization of SPAHandler to prevent circular imports
-        # We add it after other agents are created
-        self._spa_handler_instance = None
-
-    def _get_spa_handler(self):
-        """Lazy load SPAHandler to prevent circular dependencies"""
-        if self._spa_handler_instance is None:
-            import importlib
-            spa_handler_module = importlib.import_module('.spa_handler', package=__name__.rsplit('.', 1)[0])
-            SPAHandlerClass = spa_handler_module.SPAHandler
-            self._spa_handler_instance = SPAHandlerClass(self.llm_client)
-        return self._spa_handler_instance
-
-    def get_agent(self, capability: AgentCapability) -> Optional[AgentInterface]:
-        """获取指定能力的智能体"""
-        if capability == AgentCapability.SPA_HANDLE:
-            return self._get_spa_handler()
-        return self.agents.get(capability)
 
     def get_agent(self, capability: AgentCapability) -> Optional[AgentInterface]:
         """获取指定能力的智能体"""
@@ -204,3 +188,9 @@ class AgentPool:
     def get_degradation_stats(self) -> Dict[str, Any]:
         """获取降级统计"""
         return self.degradation_tracker.get_stats()
+
+# Re-export agent classes for backward compatibility
+from .sense import SenseAgent
+from .plan import PlanAgent
+from .act import ActAgent
+from .explore import ExploreAgent

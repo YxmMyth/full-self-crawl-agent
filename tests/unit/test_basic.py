@@ -45,6 +45,13 @@ class TestTools:
     """测试工具层"""
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not __import__('pathlib').Path(
+            '/home/runner/.cache/ms-playwright/chromium_headless_shell-1208'
+            '/chrome-headless-shell-linux64/chrome-headless-shell'
+        ).exists(),
+        reason="Playwright Chromium browser not installed; run 'playwright install chromium'"
+    )
     async def test_browser_tool(self):
         """测试浏览器工具"""
         from src.tools.browser import BrowserTool
