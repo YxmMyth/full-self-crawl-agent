@@ -69,7 +69,12 @@ task_id: "task_001"
 task_name: "Example E-commerce Product Crawl"
 created_at: "2026-02-25T00:00:00"
 version: "1.0"
-extraction_type: "single_page"
+# crawl_mode 控制爬取范围（可省略，系统会自动推断）
+# 支持：single_page（默认）| multi_page | full_site
+crawl_mode: "single_page"
+max_pages: 100   # multi_page / full_site 模式下最大页面数
+max_depth: 3     # full_site 模式下最大爬取深度
+url_patterns: [] # full_site 模式下 URL 路径白名单正则列表（空 = 不限制）
 targets:
   - name: "products"
     fields:
@@ -84,18 +89,24 @@ targets:
         required: true
         description: "Product price"
 start_url: "https://example.com/products"
-max_pages: 100
-depth_limit: 3
 validation_rules: {}
-anti_bot:
-  random_delay:
-    min: 1
-    max: 3
-  user_agent_rotation: true
 completion_criteria:
   min_items: 10
   quality_threshold: 0.9
 ```
+
+#### Spec 自动推断
+
+当 `crawl_mode`、`max_pages`、`max_depth` 字段缺失时，系统在首次感知页面后自动推断：
+
+| 页面特征 | 推断的 crawl_mode |
+|---------|----------------|
+| SPA (is_spa=true) | single_page |
+| 有分页 (has_pagination=true) | multi_page |
+| 列表页 + 大量链接 (≥5) | full_site |
+| 其他 | single_page |
+
+反爬等级 (`anti_bot_level`) 会按比例缩减 `max_pages`：`high` → 20%，`medium` → 50%。
 
 ### 运行任务
 
@@ -113,7 +124,9 @@ src/
 ├── core/            # 核心组件
 │   ├── policy_manager.py
 │   ├── completion_gate.py
-│   ├── smart_router.py
+│   ├── smart_router.py      # FeatureDetector + SmartRouter
+│   ├── crawl_frontier.py    # 爬取边界管理（优先队列 + 去重）
+│   ├── spec_inferrer.py     # Spec 自动推断
 │   ├── state_manager.py
 │   ├── risk_monitor.py
 │   ├── context_compressor.py
@@ -158,6 +171,16 @@ python src/main.py spec.yaml --api-key KEY
 ```bash
 python src/main.py spec.yaml --api-key KEY --headless
 ```
+
+### 爬取模式 (crawl_mode)
+
+在 Spec 中通过 `crawl_mode` 字段指定，也可省略由系统自动推断：
+
+| crawl_mode | 说明 |
+|-----------|------|
+| `single_page` | 仅抓取起始 URL 单页（默认，向后兼容） |
+| `multi_page` | 跟随分页抓取多页，受 `max_pages` 限制 |
+| `full_site` | 使用 ExploreAgent + CrawlFrontier 广度优先爬取整站，受 `max_pages` / `max_depth` 双重限制 |
 
 ### 调试模式
 
