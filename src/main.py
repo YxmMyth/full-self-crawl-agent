@@ -345,6 +345,23 @@ class SelfCrawlingAgent:
                 # 5. Gate: 门禁检查
                 logger.info("[5/6] 门禁检查...")
                 current_state = self.state_manager.get_state()
+
+                # 风险监控：在门禁检查前评估当前迭代的运行指标
+                risk_metrics = {
+                    'iteration_count': iteration + 1,
+                    'consecutive_errors': len(iteration_errors),
+                    'total_items': len(extracted_data),
+                    'failed_items': len([e for e in iteration_errors if 'error' in e]),
+                    'quality_score': quality_score,
+                }
+                risk_alerts = self.risk_monitor.check_metrics(risk_metrics)
+                if risk_alerts:
+                    from src.core.risk_monitor import RiskLevel
+                    critical = [a for a in risk_alerts
+                                if a.level in (RiskLevel.HIGH, RiskLevel.CRITICAL)]
+                    if critical:
+                        logger.warning(f"风险监控告警: {[a.message for a in critical]}")
+
                 gate_passed = self.completion_gate.check(current_state, self.spec)
 
                 if gate_passed:
@@ -469,7 +486,7 @@ class SelfCrawlingAgent:
         except Exception as e:
             logger.error(f"错误: {str(e)}")
             logger.exception("详细错误信息:")
-            self.state_manager.add_error(str(e))
+            self.state_manager.add_error_sync(str(e))
             return {
                 'success': False,
                 'error': str(e)

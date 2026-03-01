@@ -440,27 +440,98 @@ class ProgressiveExplorer:
         ('headless_browser', 0.50),    # 复杂JS
     ]
 
-    async def explore(self, url: str, goal: str, strategies=None):
+    def __init__(self, router: Optional['SmartRouter'] = None):
+        self.router = router or SmartRouter()
+
+    async def explore(self, url: str, goal: str, html: Optional[str] = None,
+                      strategies=None):
         """
         渐进式探索
 
-        从简单到复杂尝试策略
+        从简单到复杂依次通过 SmartRouter 评估各策略可行性，
+        返回第一个预期成功率满足要求的路由决策。
+
+        Args:
+            url: 目标 URL
+            goal: 爬取目标描述
+            html: 可选的页面 HTML（已获取时传入以节省一次请求）
+            strategies: 自定义策略顺序列表，格式 [(名称, 最低成功率), ...]
+
+        Returns:
+            满足条件的路由决策字典，或 {'success': False, 'error': ...}
         """
         if strategies is None:
             strategies = self.STRATEGY_ORDER
 
-        for strategy_name, expected_rate in strategies:
-            # 这里应该调用实际的策略执行器
-            # 暂时返回模拟结果
-            result = {
-                'strategy': strategy_name,
-                'success': False,
-                'quality': 0.0,
-                'data': []
-            }
+        last_decision: Optional[Dict[str, Any]] = None
 
-            # 如果成功且质量达标，返回结果
-            if result.get('success') and result.get('quality', 0) >= 0.6:
-                return result
+        for strategy_name, min_success_rate in strategies:
+            # 跳过与当前页面特征不匹配的策略
+            if not self._is_applicable(strategy_name, url, html):
+                continue
 
-        return {'success': False, 'error': '所有策略失败'}
+            # 通过 SmartRouter 路由（对复杂策略允许使用 LLM）
+            use_llm = strategy_name in ('api_reverse', 'login_required', 'headless_browser')
+            decision = await self.router.route(url, goal, html=html, use_llm=use_llm)
+
+            last_decision = decision
+
+            # 如果路由的预期成功率满足该策略的最低要求，则采用此决策
+            if decision.get('expected_success_rate', 0) >= min_success_rate:
+                return {
+                    'success': True,
+                    'strategy': strategy_name,
+                    'decision': decision,
+                }
+
+        # 所有策略都不满足要求，返回最后一次路由决策供上层参考
+        return {
+            'success': False,
+            'error': '所有策略的预期成功率均低于阈值',
+            'last_decision': last_decision,
+        }
+
+    def _is_applicable(self, strategy_name: str, url: str,
+                       html: Optional[str]) -> bool:
+        """
+        快速判断策略是否适用于当前页面
+
+        基于 URL 模式和 HTML 特征进行轻量级过滤，
+        避免对明显不适用的策略发起完整的路由分析。
+        """
+        if html is None:
+            # 没有 HTML 时，只过滤掉需要已登录状态的策略
+            return strategy_name != 'login_required'
+
+        html_lower = html.lower()
+
+        if strategy_name == 'direct_crawl':
+            # 直接爬取适用于所有页面
+            return True
+
+        if strategy_name == 'pagination_crawl':
+            # 只有存在分页特征时才适用
+            return bool(
+                re.search(r'page=\d+|/page/\d+|下一页|next\s*page|pagination', html_lower)
+            )
+
+        if strategy_name == 'api_reverse':
+            # 存在 SPA/AJAX 特征时适用
+            return bool(
+                re.search(r'fetch\(|xmlhttprequest|div\s+id=["\']app["\']|div\s+id=["\']root["\']',
+                          html_lower)
+            )
+
+        if strategy_name == 'login_required':
+            # 检测到登录表单时适用
+            return bool(
+                re.search(r'type=["\']?password["\']?|action=["\']?login["\']?', html_lower)
+            )
+
+        if strategy_name == 'headless_browser':
+            # 检测到 Cloudflare 或复杂 JS 时适用
+            return bool(
+                re.search(r'cloudflare|recaptcha|turnstile|challenge', html_lower)
+            )
+
+        return True

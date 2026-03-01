@@ -119,7 +119,8 @@ class CompletionGate:
             except (ValueError, IndexError):
                 return False
 
-        raise ValueError(f"Unknown gate condition: {condition}")
+        # Unknown gate conditions are treated as failed rather than raising an error
+        return False
 
     def get_failed_gates(self) -> List[str]:
         """获取失败的门禁"""
