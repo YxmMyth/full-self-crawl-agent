@@ -268,7 +268,7 @@ class PlanAgent(AgentInterface):
             return 'p, [class*="desc"], [class*="content"]'
 
         # 通用：将字段名转为 kebab-case 选择器
-        kebab = re.sub(r'[_\s]+', '-', field_name.lower())
+        kebab = re.sub(r'[_\s]+', '-', field_name.lower()).strip('-')
         return f'[class*="{kebab}"], #{kebab}, .{kebab}'
 
     def _extract_html_context(self, html: str, targets: List[Dict]) -> str:
