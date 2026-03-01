@@ -51,8 +51,18 @@ class SelfCrawlingAgent:
     Sense → Plan → Act → Verify → Gate → Judge → Reflect
     """
 
-    def __init__(self, spec_path: str, api_key: Optional[str] = None):
-        self.spec_path = Path(spec_path)
+    def __init__(self, spec_path: str = None, api_key: Optional[str] = None,
+                 run_context: Optional[Any] = None):
+
+        from src.run_mode import RunContext, build_run_context
+
+        if run_context is None:
+            run_context = build_run_context(spec_path=spec_path)
+
+        self.run_context = run_context
+        self.spec_path = Path(run_context.spec_path) if run_context.spec_path else (
+            Path(spec_path) if spec_path else None
+        )
         self.api_key = api_key
         self.task_logger: Optional[TaskLogger] = None
 
@@ -74,7 +84,6 @@ class SelfCrawlingAgent:
         from src.core.context_compressor import ContextCompressor
         from src.core.verifier import EvidenceCollector, Verifier
         from src.agents.base import AgentPool, AgentCapability
-        from src.executors.executor import Executor
         from src.tools.browser import BrowserTool
         from src.tools.multi_llm_client import MultiLLMClient
         from src.tools.storage import EvidenceStorage, StateStorage
@@ -98,7 +107,6 @@ class SelfCrawlingAgent:
 
         # 执行层
         self.agent_pool = None
-        self.executor = Executor()
 
         # 工具层
         self.browser = None
@@ -125,10 +133,15 @@ class SelfCrawlingAgent:
         from src.core.verifier import Verifier, EvidenceCollector
         from src.agents.base import AgentPool
         from src.tools.browser import BrowserTool
+        from src.executors.executor import Sandbox
 
-        # 加载 Spec 契约
-        self.spec = self.spec_loader.load_spec(str(self.spec_path))
-        self.task_id = self.spec['task_id']
+        # Spec 来源
+        if self.run_context.is_container:
+            self.spec = self.run_context.spec
+            self.task_id = self.run_context.task_id
+        else:
+            self.spec = self.spec_loader.load_spec(str(self.spec_path))
+            self.task_id = self.spec['task_id']
 
         # 初始化任务日志器
         self.task_logger = TaskLogger(self.task_id)
@@ -142,12 +155,15 @@ class SelfCrawlingAgent:
         # 初始化验证器
         self.verifier = Verifier(self.spec)
 
+        # 沙箱：本地严格，容器宽松
+        sandbox = Sandbox(strict_mode=self.run_context.sandbox_strict)
+
         # 初始化智能体池
-        self.agent_pool = AgentPool(self.llm_client)
+        self.agent_pool = AgentPool(self.llm_client, sandbox=sandbox)
         self.agent_pool.set_verifier(self.verifier)
 
-        # 初始化浏览器
-        headless = self.spec.get('headless', True)
+        # 浏览器（容器内强制 headless）
+        headless = True if self.run_context.is_container else self.spec.get('headless', True)
         self.browser = BrowserTool(headless=headless)
 
         # 初始化证据收集器
@@ -194,11 +210,14 @@ class SelfCrawlingAgent:
             logger.info(f"爬取模式: {crawl_mode}")
 
             if crawl_mode == 'full_site':
-                return await self._run_full_site(start_url)
+                result = await self._run_full_site(start_url)
             else:
                 # single_page 和 multi_page 共用相同的迭代循环；
                 # multi_page 下 ActAgent 内部会跟随分页。
-                return await self._run_single_or_multi(start_url, crawl_mode)
+                result = await self._run_single_or_multi(start_url, crawl_mode)
+
+            await self._deliver_result(result)
+            return result
 
         except Exception as e:
             error_msg = f"Critical error in main execution: {str(e)}"
@@ -935,6 +954,37 @@ class SelfCrawlingAgent:
             self.spec.update(patch)
             logger.info(f"Spec 自动推断补充字段: {list(patch.keys())}")
 
+    async def _deliver_result(self, result: dict):
+        """
+        LOCAL:     什么都不做（stdout 由 CLI 入口处理）
+        CONTAINER: 写 Redis，发布完成通知
+        """
+        if not self.run_context.is_container:
+            return
+
+        if not self.run_context.redis_url:
+            logger.warning("容器模式下 RESULT_REDIS_URL 未设置，跳过结果写入")
+            return
+
+        import json
+        try:
+            import redis as sync_redis
+        except ImportError:
+            logger.warning("redis 未安装，无法在容器模式下发送结果")
+            return
+
+        try:
+            r = sync_redis.from_url(self.run_context.redis_url)
+            r.set(
+                f"agent:result:{self.task_id}",
+                json.dumps(result, ensure_ascii=False, default=str),
+                ex=3600,
+            )
+            r.publish(f"agent:done:{self.task_id}", "1")
+            logger.info(f"结果已写入 Redis: agent:result:{self.task_id}")
+        except Exception as e:
+            logger.error(f"写入 Redis 失败: {e}")
+
     async def stop(self):
         """停止"""
         if self.browser:
@@ -962,7 +1012,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Full Self-Crawling Agent - 智能网页数据爬取'
     )
-    parser.add_argument('spec_file', help='Spec 契约文件路径')
+    parser.add_argument('spec_file', nargs='?', default=None,
+                        help='Spec 文件路径')
+    parser.add_argument('--container', action='store_true',
+                        help='容器模式（从 TASK_SPEC 环境变量读取任务）')
     parser.add_argument('--api-key', help='智谱 API Key')
     parser.add_argument('--model', help='模型名称（默认: glm-4）')
     parser.add_argument('--api-base', help='自定义 API 端点')
@@ -976,11 +1029,14 @@ def main():
     if args.debug:
         setup_logging(level='DEBUG')
 
-    # 多 LLM 提供商客户端现在从环境变量自动加载
-    # 支持 DEEPSEEK_API_KEY (推理任务) 和 ZHIPU_API_KEY (编码任务)
-
-    # 运行
-    agent = SelfCrawlingAgent(args.spec_file)
+    if args.container:
+        from src.run_mode import build_run_context
+        ctx = build_run_context()
+        agent = SelfCrawlingAgent(run_context=ctx)
+    else:
+        if not args.spec_file:
+            parser.error("本地模式需要指定 spec 文件路径")
+        agent = SelfCrawlingAgent(args.spec_file)
 
     try:
         result = asyncio.run(agent.run())
