@@ -127,7 +127,7 @@ class AgentPool:
     - SpaHandle: 处理SPA页面
     """
 
-    def __init__(self, llm_client=None):
+    def __init__(self, llm_client=None, sandbox=None):
         from .sense import SenseAgent
         from .plan import PlanAgent
         from .act import ActAgent
@@ -147,7 +147,7 @@ class AgentPool:
         self.agents = {
             AgentCapability.SENSE: SenseAgent(self.degradation_tracker),
             AgentCapability.PLAN: PlanAgent(llm_client, self.degradation_tracker),
-            AgentCapability.ACT: ActAgent(),
+            AgentCapability.ACT: ActAgent(sandbox=sandbox),
             AgentCapability.VERIFY: VerifyAgent(),
             AgentCapability.JUDGE: JudgeAgent(llm_client, self.degradation_tracker),
             AgentCapability.EXPLORE: ExploreAgent(),

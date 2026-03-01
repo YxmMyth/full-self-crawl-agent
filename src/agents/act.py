@@ -18,8 +18,9 @@ from .sense import _safe_parse_json, AgentInterface
 class ActAgent(AgentInterface):
     """执行智能体 - 执行数据提取操作"""
 
-    def __init__(self):
+    def __init__(self, sandbox=None):
         super().__init__("ActAgent", "act")
+        self.sandbox = sandbox
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -262,6 +263,27 @@ class ActAgent(AgentInterface):
             return None
         except Exception:
             return None
+
+    async def _execute_code(self, code: str, html: str) -> List[Dict]:
+        """执行 LLM 生成的代码 — 统一走 Sandbox"""
+        import json
+
+        if self.sandbox is None:
+            from src.executors.executor import Sandbox
+            self.sandbox = Sandbox(strict_mode=True)
+
+        result = await self.sandbox.execute(code, stdin_data=html,
+                                            timeout=self.sandbox.default_timeout)
+
+        if result['success'] and result['stdout']:
+            try:
+                return json.loads(result['stdout'])
+            except json.JSONDecodeError:
+                logger.warning("代码输出不是合法 JSON")
+                return []
+        else:
+            logger.warning(f"代码执行失败: {result['stderr'][:200]}")
+            return []
 
     def get_description(self) -> str:
         return "执行数据提取操作"
