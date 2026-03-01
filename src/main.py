@@ -160,7 +160,7 @@ class SelfCrawlingAgent:
         执行流程：
         1. Sense: 感知页面结构
         2. Plan: 规划提取策略
-        3. Act: 执行数据提取
+        3. Act/SpaHandle: 执行数据提取（SPA页面使用 spa_handle）
         4. Verify: 验证数据质量
         5. Gate: 门禁检查
         6. Judge: 决策是否继续
@@ -170,6 +170,21 @@ class SelfCrawlingAgent:
 
         # 初始化状态
         self.state_manager.update_state_sync({'status': 'running'})
+
+        # 初始化 CrawlFrontier（多页/全站爬取模式）
+        crawl_mode = self.spec.get('crawl_mode', 'single_page')
+        frontier = None
+        if crawl_mode in ('multi_page', 'full_site'):
+            from src.core.crawl_frontier import CrawlFrontier
+            frontier = CrawlFrontier(
+                max_pages=self.spec.get('max_pages', 100),
+                max_depth=self.spec.get('max_depth', 3),
+                url_patterns=self.spec.get('url_patterns'),
+            )
+            start_url_for_frontier = self.spec.get('start_url') or self.spec.get('target_url', '')
+            if start_url_for_frontier:
+                frontier.push(start_url_for_frontier, depth=0)
+            logger.info(f"爬取模式: {crawl_mode}，已初始化 CrawlFrontier")
 
         try:
             # 启动浏览器
@@ -193,6 +208,19 @@ class SelfCrawlingAgent:
                 })
 
                 iteration_errors = []
+
+                # 多页/全站模式：从 frontier 取下一个 URL 并导航（首次迭代已在循环前导航）
+                if frontier is not None and iteration > 0:
+                    next_item = frontier.pop()
+                    if next_item is None:
+                        logger.info("CrawlFrontier 已清空，结束爬取")
+                        break
+                    logger.info(f"[frontier] 导航至: {next_item.url} (depth={next_item.depth})")
+                    try:
+                        await self.browser.navigate(next_item.url)
+                    except Exception as e:
+                        logger.warning(f"导航失败: {next_item.url} — {e}")
+                        continue
 
                 # 1. Sense: 感知页面
                 logger.info("[1/6] 感知页面结构...")
@@ -277,33 +305,83 @@ class SelfCrawlingAgent:
                     iteration_errors.append(f"plan_exception: {str(e)}")
                     plan_result = {'success': False, 'selectors': {}, 'strategy': {}}
 
-                # 3. Act: 执行提取
+                # 3. Act/SpaHandle: 执行提取
                 logger.info("[3/6] 执行数据提取...")
                 self.state_manager.update_state_sync({'stage': 'acting'})
 
+                is_spa = sense_result.get('features', {}).get('is_spa', False)
+                current_url = self.browser.current_url if hasattr(self.browser, 'current_url') else (
+                    self.spec.get('start_url') or self.spec.get('target_url', '')
+                )
+
                 try:
-                    act_result = await self.agent_pool.execute_capability(
-                        'act',
-                        {
-                            'browser': self.browser,
-                            'selectors': plan_result.get('selectors', {}),
-                            'strategy': plan_result.get('strategy', {}),
-                            'generated_code': plan_result.get('generated_code')
-                        }
-                    )
+                    if is_spa:
+                        # SPA 页面：使用 SPAHandler 拦截 API 响应
+                        logger.info("[3/6] 检测到 SPA 页面，使用 SPAHandler 提取数据...")
+                        act_result = await self.agent_pool.execute_capability(
+                            'spa_handle',
+                            {
+                                'browser': self.browser,
+                                'current_url': current_url,
+                                'spec': self.spec,
+                                'llm_client': self.llm_client,
+                            }
+                        )
+                        extracted_data = act_result.get('records', [])
+                        logger.info(
+                            f"SPA提取: {len(extracted_data)} 条 "
+                            f"(方法: {act_result.get('method', 'unknown')})"
+                        )
+                    else:
+                        act_result = await self.agent_pool.execute_capability(
+                            'act',
+                            {
+                                'browser': self.browser,
+                                'selectors': plan_result.get('selectors', {}),
+                                'strategy': plan_result.get('strategy', {}),
+                                'generated_code': plan_result.get('generated_code')
+                            }
+                        )
+                        extracted_data = act_result.get('extracted_data', [])
 
                     if not act_result.get('success'):
                         logger.warning(f"执行失败: {act_result.get('error', '未知错误')}")
                         iteration_errors.append(f"act_error: {act_result.get('error', '未知')}")
 
-                    extracted_data = act_result.get('extracted_data', [])
-
                     self.state_manager.update_state_sync({
                         'sample_data': extracted_data[:10] if extracted_data else [],
                         'execution_result': act_result
                     })
+                    # 记录当前 URL 的结果到 per_url_results
+                    self.state_manager.add_url_result(current_url, {
+                        'records_count': len(extracted_data),
+                        'success': act_result.get('success', False),
+                        'method': act_result.get('method'),
+                    })
 
                     logger.info(f"提取数据: {len(extracted_data)} 条")
+
+                    # 多页/全站模式：探索链接并推入 CrawlFrontier
+                    if frontier is not None:
+                        try:
+                            explore_result = await self.agent_pool.execute_capability(
+                                'explore',
+                                {
+                                    'browser': self.browser,
+                                    'current_url': current_url,
+                                    'base_url': start_url or current_url,
+                                    'depth': iteration,
+                                    'max_depth': self.spec.get('max_depth', 3),
+                                    'frontier': frontier,
+                                    'discover_sitemap': (iteration == 0),
+                                }
+                            )
+                            self.state_manager.sync_frontier(frontier)
+                            logger.info(
+                                f"探索链接: {explore_result.get('pushed_to_frontier', 0)} 条推入 frontier"
+                            )
+                        except Exception as e:
+                            logger.warning(f"探索异常: {str(e)}")
 
                 except Exception as e:
                     logger.error(f"执行异常: {str(e)}")

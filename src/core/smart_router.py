@@ -628,7 +628,7 @@ def compose_capabilities(task_analysis: Dict[str, Any]) -> List[str]:
         capabilities.append('handle_pagination')
 
     if 'javascript' in requirements:
-        capabilities.insert(1, 'handle_spa')
+        capabilities.insert(1, 'spa_handle')
 
     if 'anti-bot' in requirements:
         capabilities.insert(1, 'handle_anti_bot')
