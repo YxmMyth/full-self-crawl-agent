@@ -16,9 +16,9 @@ def test_agent_pool_initialization():
     
     pool = AgentPool()
     
-    # 检查所有能力是否都已注册
+    # 检查所有能力是否都已注册（含新增的 SPA_HANDLE）
     capabilities = pool.get_all_capabilities()
-    assert len(capabilities) == 7
+    assert len(capabilities) == 8
     
     # 检查具体能力
     from src.agents.base import AgentCapability

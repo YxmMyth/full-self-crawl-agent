@@ -9,6 +9,7 @@ from .base import (
     ExploreAgent,
     ReflectAgent
 )
+from .spa_handler import SPAHandler
 
 __all__ = [
     'AgentPool',
@@ -18,5 +19,6 @@ __all__ = [
     'VerifyAgent',
     'JudgeAgent',
     'ExploreAgent',
-    'ReflectAgent'
+    'ReflectAgent',
+    'SPAHandler',
 ]

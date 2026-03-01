@@ -55,7 +55,12 @@ class StateManager:
                 'performance_data': {},
                 'failure_history': [],
                 'evidence_collected': {},
-                'update_count': 0
+                'update_count': 0,
+                # 爬取追踪字段
+                'visited_urls': [],
+                'queue_size': 0,
+                'pages_crawled': 0,
+                'per_url_results': {},
             }
 
             self.current_state = initial_state
@@ -73,7 +78,12 @@ class StateManager:
             'performance_data': {},
             'failure_history': [],
             'evidence_collected': {},
-            'update_count': 0
+            'update_count': 0,
+            # 爬取追踪字段
+            'visited_urls': [],
+            'queue_size': 0,
+            'pages_crawled': 0,
+            'per_url_results': {},
         }
 
         self.current_state = initial_state
@@ -210,4 +220,39 @@ class StateManager:
     def get_update_count(self) -> int:
         """获取更新计数"""
         return self._update_count
+
+    def sync_frontier(self, frontier: Any) -> None:
+        """
+        从 CrawlFrontier 同步爬取追踪数据到状态（同步版本）。
+
+        Args:
+            frontier: CrawlFrontier 实例
+        """
+        self.current_state['visited_urls'] = frontier.get_visited_urls()
+        self.current_state['queue_size'] = frontier.queue_size()
+        self.current_state['pages_crawled'] = frontier.pages_crawled()
+
+    async def sync_frontier_async(self, frontier: Any) -> None:
+        """
+        从 CrawlFrontier 同步爬取追踪数据到状态（异步版本）。
+
+        Args:
+            frontier: CrawlFrontier 实例
+        """
+        async with self._lock:
+            self.current_state['visited_urls'] = frontier.get_visited_urls()
+            self.current_state['queue_size'] = frontier.queue_size()
+            self.current_state['pages_crawled'] = frontier.pages_crawled()
+
+    def add_url_result(self, url: str, result: Dict[str, Any]) -> None:
+        """
+        记录单个 URL 的提取结果摘要（同步版本）。
+
+        Args:
+            url: 已处理的 URL
+            result: 该 URL 的结果摘要（如 {'records_count': 5, 'success': True}）
+        """
+        if 'per_url_results' not in self.current_state:
+            self.current_state['per_url_results'] = {}
+        self.current_state['per_url_results'][url] = result
 

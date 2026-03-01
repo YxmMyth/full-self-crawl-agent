@@ -350,7 +350,7 @@ class SmartRouter:
         },
         'spa_crawl': {
             'name': 'spa_crawl',
-            'capabilities': ['sense', 'handle_spa', 'api_extract', 'verify'],
+            'capabilities': ['sense', 'spa_handle', 'verify'],
             'expected_success_rate': 0.70,
             'complexity': 'complex',
         },
@@ -565,7 +565,7 @@ class SmartRouter:
         # 验证能力合理性
         valid_capabilities = {'sense', 'plan', 'act', 'verify', 'judge', 'explore', 'reflect',
                               'handle_login', 'handle_spa', 'handle_anti_bot', 'handle_pagination',
-                              'detect_login', 'api_extract', 'slow_plan'}
+                              'detect_login', 'api_extract', 'slow_plan', 'spa_handle'}
 
         capabilities = strategy.get('capabilities', [])
         return all(cap in valid_capabilities for cap in capabilities)
