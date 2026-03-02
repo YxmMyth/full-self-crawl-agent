@@ -36,9 +36,11 @@ class Sandbox:
     Docker:  Sandbox(strict_mode=False)  → 只管超时 + subprocess
     """
 
-    def __init__(self, strict_mode: bool = True, default_timeout: int = 60):
+    def __init__(self, strict_mode: bool = True, default_timeout: int = 60,
+                 policy_manager=None):
         self.strict_mode = strict_mode
         self.default_timeout = default_timeout
+        self.policy_manager = policy_manager
 
     def validate_code(self, code: str) -> Tuple[bool, List[str]]:
         """校验代码安全性（仅 strict_mode 生效）"""
@@ -55,6 +57,21 @@ class Sandbox:
                       timeout: int = None) -> Dict[str, Any]:
         """执行 Python 代码"""
         timeout = timeout or self.default_timeout
+
+        # PolicyManager 策略检查（优先于 strict_mode 检查）
+        if self.policy_manager:
+            policy_result = self.policy_manager.check_code(code)
+            if not policy_result.get('allowed', True):
+                violations = policy_result.get('violations', [])
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': "策略检查失败:\n" + "\n".join(
+                        f"[{v.get('level', 'CRITICAL')}] {v.get('description', v.get('name', ''))}"
+                        for v in violations
+                    ),
+                    'returncode': -1,
+                }
 
         # strict 模式下做安全校验
         if self.strict_mode:

@@ -18,6 +18,7 @@ from .agents.base import AgentPool, AgentCapability
 from .core.crawl_frontier import CrawlFrontier, canonicalize_url
 from .core.context_compressor import ContextCompressor
 from .core.state_manager import StateManager
+from .core.risk_monitor import RiskMonitor
 from .config.loader import load_config
 from .core.spec_inferrer import SpecInferrer
 
@@ -61,9 +62,12 @@ class SelfCrawlingAgent:
         )
         self._llm_available = bool(api_key and api_key.strip())
         sandbox_cfg = self.config.get('sandbox', {})
+        from .core.policy_manager import PolicyManager
+        self.policy_manager = PolicyManager()
         self.sandbox = Sandbox(
             strict_mode=sandbox_cfg.get('strict_mode', True),
-            default_timeout=sandbox_cfg.get('timeout', 60)
+            default_timeout=sandbox_cfg.get('timeout', 60),
+            policy_manager=self.policy_manager
         )
         browser_cfg = self.config.get('browser', {})
         self.browser = Browser(headless=browser_cfg.get('headless', True))
@@ -77,6 +81,7 @@ class SelfCrawlingAgent:
         # 核心组件
         self.frontier = CrawlFrontier()
         self.context_compressor = ContextCompressor(max_tokens=8000)
+        self.risk_monitor = RiskMonitor()
 
         # 用于跟踪性能指标
         self.metrics = {
@@ -209,6 +214,28 @@ class SelfCrawlingAgent:
                 'result': page_result,
                 'page_number': page_count + 1
             })
+
+            # 风险监控检查
+            risk_metrics = {
+                'total_items': len(extracted_data),
+                'failed_items': 0 if page_result.get('success') else 1,
+                'consecutive_errors': sum(1 for r in all_results if not r.get('result', {}).get('success')),
+                'iteration_count': iterations,
+            }
+            alerts = self.risk_monitor.check_metrics(risk_metrics)
+            if self.risk_monitor.has_critical_risk():
+                critical = self.risk_monitor.get_high_risk_alerts()
+                logger.warning(f"风险监控触发终止: {[a.message for a in critical]}")
+                return {
+                    'success': False,
+                    'crawl_mode': crawl_mode,
+                    'results': all_results,
+                    'extracted_data': extracted_data,
+                    'iterations': iterations,
+                    'quality_score': page_result.get('verification_result', {}).get('quality_score', 0.0),
+                    'error': 'terminated_by_risk_monitor',
+                    'risk_alerts': [{'level': a.level.value, 'message': a.message} for a in critical],
+                }
 
             # 仅在首次迭代做一次 spec 推断（兼容旧行为）
             if not spec_inferred:

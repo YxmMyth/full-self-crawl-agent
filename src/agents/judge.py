@@ -13,6 +13,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from .base import _safe_parse_json, DegradationTracker, AgentInterface
+from src.core.completion_gate import GateDecision
 
 
 class JudgeAgent(AgentInterface):
@@ -22,6 +23,7 @@ class JudgeAgent(AgentInterface):
         super().__init__("JudgeAgent", "judge")
         self.llm_client = llm_client
         self.degradation_tracker = degradation_tracker or DegradationTracker()
+        self.gate_decision = GateDecision()
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -37,10 +39,22 @@ class JudgeAgent(AgentInterface):
         degradation_info = None
 
         try:
-            # 1. 基于规则的决策
-            rule_decision = self._rule_based_decision(
-                quality_score, iteration, max_iterations, len(errors), len(extracted_data)
-            )
+            # 1. 基于门禁的决策（替代硬编码阈值）
+            gate_state = {
+                'quality_score': quality_score,
+                'extracted_data': extracted_data,
+                'html_snapshot': context.get('html_snapshot'),
+                'execution_result': context.get('verification_result', {}),
+            }
+            gate_decision_str = self.gate_decision.decide(gate_state, spec)
+            gate_reason = self.gate_decision.get_decision_reason(gate_decision_str, gate_state)
+            rule_decision = (gate_decision_str, gate_reason)
+
+            # 回退：门禁无 spec 配置时使用经典规则
+            if not spec.get('completion_gate') and not spec.get('completion_criteria'):
+                rule_decision = self._rule_based_decision(
+                    quality_score, iteration, max_iterations, len(errors), len(extracted_data)
+                )
 
             # 2. LLM 增强决策（推理任务，使用 DeepSeek）
             llm_decision = None
