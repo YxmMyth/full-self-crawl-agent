@@ -15,7 +15,9 @@ Vision-LLM 浏览器层 — 视觉驱动的自主浏览器交互
 
 import base64
 import hashlib
+import json
 import logging
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -60,31 +62,31 @@ class PageVisualAnalysis:
     analysis_source: str = "rules"  # "rules" or "llm"
 
 
-# 常见阻断页面关键词
+# 常见阻断页面关键词（精简后：移除过于宽泛的词汇以降低假阳性）
 BLOCKER_PATTERNS = {
     PageBlocker.CAPTCHA: [
         'captcha', 'recaptcha', 'hcaptcha', 'verify you are human',
-        '验证码', '人机验证', 'robot', 'challenge',
+        '验证码', '人机验证', 'are you a robot', 'not a robot',
     ],
     PageBlocker.LOGIN_WALL: [
-        'sign in', 'log in', 'login', '登录', '登入', 'please log in',
-        'create account', '注册', 'authentication required',
+        'sign in to continue', 'log in to continue', 'please log in',
+        '登录后继续', '登入', 'authentication required',
     ],
     PageBlocker.COOKIE_CONSENT: [
-        'cookie', 'consent', 'accept all', 'privacy policy',
-        '接受 cookie', '隐私设置',
+        'cookie consent', 'accept all cookies', 'cookie policy',
+        'accept all', '接受 cookie', '隐私设置',
     ],
     PageBlocker.PAYWALL: [
-        'subscribe', 'premium', 'paywall', 'subscription required',
-        '订阅', '付费', 'upgrade to',
+        'paywall', 'subscription required', 'subscribers only',
+        'premium content', '付费内容', '订阅后查看',
     ],
     PageBlocker.RATE_LIMIT: [
         'rate limit', 'too many requests', '429', 'slow down',
         '请求过于频繁', '稍后再试',
     ],
     PageBlocker.ANTI_BOT: [
-        'access denied', 'forbidden', 'blocked', 'cloudflare',
-        '访问被拒绝', 'please wait', 'checking your browser',
+        'access denied', 'forbidden', 'cloudflare',
+        '访问被拒绝', 'checking your browser',
     ],
 }
 
@@ -95,6 +97,36 @@ DATA_REGION_SELECTORS = [
     '[class*="article"]', '[class*="post"]', 'ul > li', 'ol > li',
     '[role="list"]', '[role="grid"]', '[role="table"]',
 ]
+
+
+def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """从可能包含非 JSON 前后缀的 LLM 响应中提取 JSON 对象。"""
+    if not text or not text.strip():
+        return None
+    # 尝试直接 parse
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # 提取 ```json ... ``` 代码块
+    m = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    # 提取第一个 { ... } 子串
+    decoder = json.JSONDecoder()
+    idx = text.find('{')
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        idx = text.find('{', idx + 1)
+    return None
 
 
 class VisionBrowser:
@@ -237,8 +269,7 @@ class VisionBrowser:
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
             ]}]
             response = await self.llm_client.chat(messages)
-            import json
-            result = json.loads(response) if isinstance(response, str) else response
+            result = _extract_json_from_text(response) if isinstance(response, str) else response
             if result.get('found'):
                 return VisualElement(
                     description=result.get('description', description),
@@ -293,11 +324,12 @@ class VisionBrowser:
         return ""
 
     def _detect_blocker_by_rules(self, text: str) -> PageBlocker:
-        """基于关键词规则检测页面阻断"""
+        """基于关键词规则检测页面阻断（阈值≥3 降低假阳性）"""
+        text_lower = text.lower()
         scores: Dict[PageBlocker, int] = {}
         for blocker, patterns in BLOCKER_PATTERNS.items():
-            count = sum(1 for p in patterns if p in text)
-            if count >= 2:
+            count = sum(1 for p in patterns if p in text_lower)
+            if count >= 3:
                 scores[blocker] = count
 
         if not scores:
@@ -372,11 +404,15 @@ class VisionBrowser:
         if not screenshot or not self.llm_client:
             return None
 
+        # 限制 screenshot 大小：超过 200KB 则跳过图片（仅用文本）
+        _MAX_SCREENSHOT_BYTES = 200 * 1024
         b64 = base64.b64encode(screenshot).decode('utf-8')
-        prompt = f"""分析这个网页截图和部分 HTML 文本。
+        include_image = len(b64) <= _MAX_SCREENSHOT_BYTES * 4 // 3  # base64 膨胀约 4/3
+
+        prompt = f"""分析这个网页的部分 HTML 文本。
 
 HTML 片段（前3000字符）：
-{text_snippet[:2000]}
+{text_snippet[:3000]}
 
 请判断：
 1. page_type: list/detail/form/search/login/error/captcha/unknown
@@ -388,13 +424,12 @@ HTML 片段（前3000字符）：
 {{"page_type": "...", "blocker": "...", "has_data": true/false, "layout": "..."}}"""
 
         try:
-            messages = [{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-            ]}]
+            content_parts = [{"type": "text", "text": prompt}]
+            if include_image:
+                content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+            messages = [{"role": "user", "content": content_parts}]
             response = await self.llm_client.chat(messages)
-            import json
-            return json.loads(response) if isinstance(response, str) else response
+            return _extract_json_from_text(response) if isinstance(response, str) else response
         except Exception as e:
             logger.debug(f"LLM 视觉分析调用失败: {e}")
             return None

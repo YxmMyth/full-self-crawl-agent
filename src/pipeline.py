@@ -7,6 +7,7 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from urllib.parse import urljoin
 
 from .agents.base import AgentCapability
 from .core.smart_router import SmartRouter
@@ -100,10 +101,11 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
                 if handled:
                     print(f"   ✓ 已自主处理: {visual_analysis.blocker.value}")
                 else:
-                    # 不可绕过的阻断类型，立即放弃
+                    # 不可绕过的阻断类型：仅 LLM 确认的才立即放弃，规则检测降级为继续尝试
                     unresolvable = {PageBlocker.PAYWALL, PageBlocker.GEO_BLOCK, PageBlocker.ANTI_BOT}
-                    if visual_analysis.blocker in unresolvable:
-                        print(f"   ✗ 不可绕过阻断: {visual_analysis.blocker.value}，放弃此页")
+                    is_llm_confirmed = visual_analysis.analysis_source == 'llm'
+                    if visual_analysis.blocker in unresolvable and is_llm_confirmed:
+                        print(f"   ✗ LLM 确认不可绕过阻断: {visual_analysis.blocker.value}，放弃此页")
                         return {
                             'success': False,
                             'error': f'blocked_by_{visual_analysis.blocker.value}',
@@ -112,7 +114,7 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
                             'extracted_data': [],
                             'decision': {'decision': 'terminate'},
                         }
-                    print(f"   ✗ 无法绕过: {visual_analysis.blocker.value}，继续尝试提取")
+                    print(f"   ⚠ 规则检测到 {visual_analysis.blocker.value}（可能误判），继续尝试提取")
         except Exception as e:
             logger.debug(f"Vision 分析失败（降级为标准流程）: {e}")
 
@@ -217,8 +219,14 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
             pipeline_context['extracted_data'] = act_result.get('extracted_data', [])
             source_url = context.get('start_url', '')
             for rec in pipeline_context['extracted_data']:
-                if isinstance(rec, dict) and 'source_url' not in rec:
-                    rec['source_url'] = source_url
+                if isinstance(rec, dict):
+                    if 'source_url' not in rec:
+                        rec['source_url'] = source_url
+                    # 自动补全相对 URL 为绝对 URL
+                    if source_url:
+                        for k, v in rec.items():
+                            if isinstance(v, str) and v.startswith('/') and not v.startswith('//'):
+                                rec[k] = urljoin(source_url, v)
             pipeline_context['extraction_method'] = extraction_method
             print(f"   提取完成 ({len(act_result.get('extracted_data', []))} 条记录, 方法: {extraction_method})")
 

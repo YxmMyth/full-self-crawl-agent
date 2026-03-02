@@ -48,19 +48,19 @@ class TestBlockerDetection:
         assert vision._detect_blocker_by_rules("hello world product list") == PageBlocker.NONE
 
     def test_captcha_detected(self, vision):
-        text = "please complete the captcha to verify you are human"
+        text = "please complete the captcha verify you are human. hcaptcha challenge: are you a robot?"
         assert vision._detect_blocker_by_rules(text) == PageBlocker.CAPTCHA
 
     def test_login_wall_detected(self, vision):
-        text = "please sign in to your account or log in to continue"
+        text = "please log in. sign in to continue or log in to continue. authentication required"
         assert vision._detect_blocker_by_rules(text) == PageBlocker.LOGIN_WALL
 
     def test_cookie_consent_detected(self, vision):
-        text = "we use cookie on this site. please accept all or manage consent"
+        text = "cookie consent notice. accept all cookies. read our cookie policy"
         assert vision._detect_blocker_by_rules(text) == PageBlocker.COOKIE_CONSENT
 
     def test_paywall_detected(self, vision):
-        text = "subscribe to read the full article. premium content requires subscription required"
+        text = "this is a paywall. premium content for subscribers only. subscription required"
         assert vision._detect_blocker_by_rules(text) == PageBlocker.PAYWALL
 
     def test_rate_limit_detected(self, vision):
@@ -68,16 +68,17 @@ class TestBlockerDetection:
         assert vision._detect_blocker_by_rules(text) == PageBlocker.RATE_LIMIT
 
     def test_anti_bot_detected(self, vision):
-        text = "access denied. checking your browser before proceeding blocked"
+        text = "access denied. forbidden. checking your browser before proceeding. cloudflare"
         assert vision._detect_blocker_by_rules(text) == PageBlocker.ANTI_BOT
 
     def test_single_keyword_not_enough(self, vision):
-        """单个关键词不应触发（需 >= 2 个匹配）"""
+        """少于 3 个关键词不应触发（需 >= 3 个匹配）"""
         assert vision._detect_blocker_by_rules("captcha") == PageBlocker.NONE
+        assert vision._detect_blocker_by_rules("captcha verify you are human") == PageBlocker.NONE
 
     def test_highest_score_wins(self, vision):
         """多种阻断同时出现时返回匹配度最高的"""
-        text = "captcha verify you are human robot challenge recaptcha hcaptcha sign in"
+        text = "captcha verify you are human are you a robot recaptcha hcaptcha not a robot sign in to continue"
         result = vision._detect_blocker_by_rules(text)
         assert result == PageBlocker.CAPTCHA
 
@@ -174,7 +175,7 @@ class TestAnalyzePage:
 
     @pytest.mark.asyncio
     async def test_blocker_page(self):
-        html = "captcha recaptcha verify you are human robot challenge"
+        html = "captcha recaptcha verify you are human hcaptcha are you a robot not a robot"
         browser = FakeBrowser(html=html)
         v = VisionBrowser(browser, llm_client=None)
         analysis = await v.analyze_page(use_vision_llm=False)

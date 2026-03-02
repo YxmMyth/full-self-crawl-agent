@@ -451,7 +451,7 @@ class MultiLLMClient:
 
     async def chat(
         self,
-        messages: List[Dict[str, str]],
+        messages,
         task_type: TaskType = TaskType.GENERAL,
         **kwargs
     ) -> str:

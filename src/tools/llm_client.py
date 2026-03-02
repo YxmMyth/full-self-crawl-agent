@@ -240,10 +240,11 @@ class LLMClient:
 
         return ''
 
-    async def chat(self, messages: List[Dict[str, str]],
+    async def chat(self, messages,
                   max_tokens: int = 1024, temperature: float = 0.7,
-                  top_p: float = 0.7, max_retries: int = None) -> str:
-        """对话接口"""
+                  top_p: float = 0.7, max_retries: int = None, **kwargs) -> str:
+        """对话接口（自动兼容 string / List[Dict] / 多模态 content）"""
+        messages = self._sanitize_messages(messages)
         response = await self._call_api_with_retry(
             messages, max_tokens, temperature, top_p, max_retries
         )
@@ -254,6 +255,37 @@ class LLMClient:
             return response['choices'][0]['message']['content']
 
         return ''
+
+    @staticmethod
+    def _sanitize_messages(messages) -> List[Dict[str, str]]:
+        """
+        规范化 messages 格式，确保兼容 OpenAI API 标准。
+        - string → [{"role": "user", "content": string}]
+        - 多模态 content (list) → 提取 text 部分，拼接为 string
+        """
+        if isinstance(messages, str):
+            return [{'role': 'user', 'content': messages}]
+
+        if not isinstance(messages, list):
+            return [{'role': 'user', 'content': str(messages)}]
+
+        sanitized = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                # 多模态 content：提取所有 text 部分
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        text_parts.append(item.get('text', ''))
+                content = '\n'.join(text_parts) if text_parts else str(content)
+            sanitized.append({
+                'role': msg.get('role', 'user'),
+                'content': str(content),
+            })
+        return sanitized or [{'role': 'user', 'content': ''}]
 
     async def _call_api_with_retry(self, messages: List[Dict[str, str]],
                                     max_tokens: int, temperature: float,

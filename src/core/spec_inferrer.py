@@ -120,6 +120,17 @@ class SpecInferrer:
         updated = dict(spec or {})
         description = updated.get('description', '') or updated.get('goal', '')
 
+        # extraction_type → crawl_mode 映射（优先尊重用户在 spec 中设定的值）
+        _EXTRACTION_TO_CRAWL = {
+            'single_page': 'single_page',
+            'multi_page': 'multi_page',
+            'full_site': 'full_site',
+        }
+        if not updated.get('crawl_mode') and updated.get('extraction_type'):
+            mapped = _EXTRACTION_TO_CRAWL.get(updated['extraction_type'])
+            if mapped:
+                updated['crawl_mode'] = mapped
+
         # LLM 路径：有 LLM + 有自然语言描述
         if self.llm_client and description:
             try:
