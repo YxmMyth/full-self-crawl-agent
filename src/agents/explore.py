@@ -1,6 +1,12 @@
 """
-探索智能体 - ExploreAgent
-探索页面链接和结构
+探索智能体 - ExploreAgent（LLM 主导 + 规则回退）
+
+LLM 可用时：
+- 根据数据需求描述对链接进行相关性评估和优先级排序
+- 生成导航建议（去哪些子页面最可能找到目标数据）
+
+LLM 不可用时：
+- 关键词匹配分类链接（detail/list/other）
 """
 
 from typing import Dict, Any, List, Optional
@@ -16,18 +22,11 @@ from .base import AgentInterface
 
 
 class ExploreAgent(AgentInterface):
-    """探索智能体 v2 - 探索页面链接和结构
+    """探索智能体 — LLM 主导的有目的站点导航"""
 
-    新特性：
-    - 集成 CrawlFrontier（若 context 中提供）
-    - 支持 sitemap.xml 发现和解析
-    - 过滤静态资源
-    - URL 规范化
-    - 链接类型分类
-    """
-
-    def __init__(self):
+    def __init__(self, llm_client=None):
         super().__init__("ExploreAgent", "explore")
+        self.llm_client = llm_client
 
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         browser = context.get('browser')
@@ -35,8 +34,10 @@ class ExploreAgent(AgentInterface):
         depth = context.get('depth', 0)
         max_depth = context.get('max_depth', 2)
         base_url = context.get('base_url', current_url)
-        frontier = context.get('frontier')  # 可选的 CrawlFrontier
+        frontier = context.get('frontier')
         discover_sitemap = context.get('discover_sitemap', False)
+        llm_client = context.get('llm_client') or self.llm_client
+        spec = context.get('spec', {})
 
         if depth >= max_depth:
             return {'success': True, 'links': [], 'message': '已达到最大探索深度'}
@@ -55,8 +56,23 @@ class ExploreAgent(AgentInterface):
                 if lnk not in relevant_links:
                     relevant_links.append(lnk)
 
-        # 4. 分类链接
-        categorized = self._categorize_links(relevant_links, context)
+        # 4. LLM 主导的链接评估 + 分类（有 LLM 且有数据需求描述时）
+        description = spec.get('description', '') or spec.get('goal', '')
+        navigation_hints = []
+
+        if llm_client and description and relevant_links:
+            try:
+                ranked = await self._llm_rank_links(
+                    llm_client, relevant_links, description, current_url
+                )
+                relevant_links = ranked.get('ranked_links', relevant_links)
+                categorized = ranked.get('categorized', self._categorize_links(relevant_links, context))
+                navigation_hints = ranked.get('navigation_hints', [])
+            except Exception as e:
+                logger.debug(f"LLM 链接评估失败，回退到规则: {e}")
+                categorized = self._categorize_links(relevant_links, context)
+        else:
+            categorized = self._categorize_links(relevant_links, context)
 
         # 5. 如果提供了 CrawlFrontier，将链接推入队列
         pushed_count = 0
@@ -75,6 +91,56 @@ class ExploreAgent(AgentInterface):
             'next_depth': depth + 1,
             'sitemap_links': sitemap_links,
             'pushed_to_frontier': pushed_count,
+            'navigation_hints': navigation_hints,
+        }
+
+    async def _llm_rank_links(
+        self, llm_client, links: List[str], description: str, current_url: str
+    ) -> Dict[str, Any]:
+        """使用 LLM 根据数据需求对链接进行相关性排序。"""
+        # 限制发送给 LLM 的链接数量
+        sample = links[:50]
+
+        prompt = f"""你是数据探索代理。当前在页面: {current_url}
+用户需求: {description}
+
+以下是页面上发现的链接（共 {len(sample)} 条）：
+{json.dumps(sample, ensure_ascii=False)}
+
+请返回严格 JSON（无注释、无 markdown）：
+{{
+  "ranked_links": ["最可能包含目标数据的链接排在前面，最多 20 条"],
+  "categorized": {{
+    "high_relevance": ["高相关性链接"],
+    "medium_relevance": ["中等相关性"],
+    "low_relevance": ["低相关性"]
+  }},
+  "navigation_hints": ["导航建议，如'点击分类页面可能找到更多数据'"]
+}}"""
+
+        response = await llm_client.chat([
+            {'role': 'system', 'content': '你是站点导航专家。根据用户数据需求评估链接相关性。只返回 JSON。'},
+            {'role': 'user', 'content': prompt},
+        ])
+
+        text = response.get('content', '') if isinstance(response, dict) else str(response)
+        json_match = re.search(r'\{[\s\S]*\}', text)
+        if not json_match:
+            raise ValueError("LLM 返回无法解析")
+
+        result = json.loads(json_match.group())
+
+        # 确保 ranked_links 中的链接都来自原始列表
+        ranked = [l for l in result.get('ranked_links', []) if l in links]
+        # 补充 LLM 未提及的链接
+        for l in links:
+            if l not in ranked:
+                ranked.append(l)
+
+        return {
+            'ranked_links': ranked,
+            'categorized': result.get('categorized', {}),
+            'navigation_hints': result.get('navigation_hints', []),
         }
 
     async def _extract_links(self, browser, base_url: str = '') -> List[str]:
