@@ -13,6 +13,7 @@ SpecInferrer 单元测试
 - infer_and_patch 原地更新 spec
 """
 
+import json
 import pytest
 from src.core.spec_inferrer import SpecInferrer
 
@@ -269,3 +270,76 @@ def test_infer_and_patch_does_not_override_existing(inferrer):
     inferrer.infer_and_patch(spec, features)
     assert spec['crawl_mode'] == 'single_page'
     assert spec['max_pages'] == 5
+
+
+# ---------------------------------------------------------------------------
+# LLM 路径测试
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_llm_infer_generates_exploration_plan():
+    """LLM 可用时应生成 exploration_plan 和 data_description"""
+    from unittest.mock import AsyncMock
+    llm = AsyncMock()
+    llm.chat = AsyncMock(return_value={
+        'content': json.dumps({
+            'data_description': '用户需要 HTML 格式的 PPT 模板文件',
+            'exploration_plan': {
+                'strategy': '浏览模板分类页，收集下载链接',
+                'target_pages': ['模板列表页', '下载页'],
+                'navigation_hints': ['点击 PPT 分类'],
+            },
+            'success_criteria': '找到包含 .pptx 下载链接的列表',
+            'crawl_mode': 'multi_page',
+            'max_pages': 10,
+            'targets': [{'name': 'templates', 'fields': [
+                {'name': 'title', 'description': '模板标题', 'required': True},
+                {'name': 'download_url', 'description': '下载链接', 'required': True},
+            ]}],
+        })
+    })
+
+    inferrer = SpecInferrer(llm_client=llm)
+    spec = {'description': '找 HTML 格式的 PPT 模板'}
+    result = await inferrer.infer_missing_fields('https://example.com', spec)
+
+    assert result.get('data_description') == '用户需要 HTML 格式的 PPT 模板文件'
+    assert result.get('exploration_plan', {}).get('strategy')
+    assert result.get('crawl_mode') == 'multi_page'
+    assert result.get('max_pages') == 10
+    assert result.get('targets')[0]['name'] == 'templates'
+
+
+@pytest.mark.asyncio
+async def test_llm_infer_does_not_override_existing_fields():
+    """LLM 推断不应覆盖 spec 中已有的字段"""
+    from unittest.mock import AsyncMock
+    llm = AsyncMock()
+    llm.chat = AsyncMock(return_value={
+        'content': json.dumps({
+            'crawl_mode': 'full_site',
+            'max_pages': 100,
+        })
+    })
+
+    inferrer = SpecInferrer(llm_client=llm)
+    spec = {'description': '测试', 'crawl_mode': 'single_page', 'max_pages': 5}
+    result = await inferrer.infer_missing_fields('https://example.com', spec)
+
+    assert result['crawl_mode'] == 'single_page'  # 不被覆盖
+    assert result['max_pages'] == 5  # 不被覆盖
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_falls_back_to_rules():
+    """LLM 调用失败时回退到规则推断"""
+    from unittest.mock import AsyncMock
+    llm = AsyncMock()
+    llm.chat = AsyncMock(side_effect=Exception("API error"))
+
+    inferrer = SpecInferrer(llm_client=llm)
+    spec = {'description': '测试需求'}
+    result = await inferrer.infer_missing_fields('https://example.com', spec)
+
+    # 应该通过规则推断出 crawl_mode（回退路径正常工作）
+    assert 'crawl_mode' in result

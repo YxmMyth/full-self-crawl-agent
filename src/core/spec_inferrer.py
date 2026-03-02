@@ -1,19 +1,24 @@
 """
-SpecInferrer - Spec 自动推断
-当 Spec 缺失或不完整时，从已检测的页面特征和发现的链接模式推断 Spec 字段。
+SpecInferrer - Spec 自动推断（LLM 主导 + 规则回退）
 
-推断规则：
-- crawl_mode: 根据 is_spa / has_pagination / container_info / 链接数量推断
-- page_type: 直接来自 FeatureDetector
-- max_pages / max_depth: 根据 crawl_mode 和 anti_bot_level 设置保守默认值
-- url_patterns: 从发现的链接中提取公共路径前缀模式
+LLM 可用时：
+- 理解自然语言数据需求（如"找 HTML 格式的 PPT 模板"）
+- 生成站点探索计划（去哪些页面、找什么数据、如何判断找到）
+- 推断合理的 crawl_mode / max_pages / targets 等参数
+
+LLM 不可用时（回退）：
+- 从页面特征和链接模式推断 crawl_mode / max_pages / max_depth 等
 """
 
 from __future__ import annotations
 
+import json
 import re
+import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 
 # 各模式的默认上限
@@ -30,20 +35,49 @@ _ANTI_BOT_FACTOR: Dict[str, float] = {
     'high': 0.2,
 }
 
+_LLM_PROMPT = """\
+你是一个自主数据探索代理。用户给了一个 URL 和自然语言数据需求描述，你需要理解需求并生成探索计划。
+
+URL: {url}
+用户需求: {description}
+{page_context}
+
+请返回 **严格 JSON**（无注释、无 markdown），格式如下：
+{{
+  "data_description": "用一句话描述用户想要什么数据",
+  "exploration_plan": {{
+    "strategy": "如何探索这个站点找到数据（搜索/分类浏览/分页遍历/直接提取）",
+    "target_pages": ["可能包含目标数据的页面类型，如列表页/搜索结果页/下载页"],
+    "navigation_hints": ["导航建议，如点击哪类链接、使用搜索框等"]
+  }},
+  "success_criteria": "什么情况下算是找到了数据（如找到包含下载链接的列表）",
+  "crawl_mode": "single_page 或 multi_page 或 full_site",
+  "max_pages": 数字,
+  "targets": [
+    {{
+      "name": "目标数据集名称",
+      "fields": [
+        {{"name": "字段名", "description": "字段描述", "required": true/false}}
+      ]
+    }}
+  ]
+}}
+"""
+
 
 class SpecInferrer:
     """
-    从页面特征和链接模式推断缺失的 Spec 字段。
+    从用户需求和页面特征推断 Spec。LLM 可用时使用 LLM 理解需求，否则回退到规则推断。
 
     用法::
 
-        inferrer = SpecInferrer()
-        patch = inferrer.infer(features, discovered_links, existing_spec)
-        spec.update(patch)
+        inferrer = SpecInferrer(browser, llm_client)
+        spec = await inferrer.infer_missing_fields(url, spec)
     """
 
-    def __init__(self, browser: Optional[Any] = None):
+    def __init__(self, browser: Optional[Any] = None, llm_client: Optional[Any] = None):
         self.browser = browser
+        self.llm_client = llm_client
 
     async def infer_missing_fields(
         self,
@@ -52,7 +86,8 @@ class SpecInferrer:
         discovered_links: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        兼容旧接口：从当前页面提取特征并补全缺失字段，返回更新后的 spec。
+        主入口：从 URL + spec 推断缺失字段，返回更新后的 spec。
+        LLM 可用且 spec 含 description 时走 LLM 路径，否则走规则路径。
         """
         features: Dict[str, Any] = {'url': start_url}
 
@@ -64,13 +99,77 @@ class SpecInferrer:
                 features['url'] = start_url
                 features['html'] = html[:10000]
             except Exception:
-                # 特征提取失败时，使用默认空特征继续推断
                 features = {'url': start_url}
 
         updated = dict(spec or {})
+        description = updated.get('description', '') or updated.get('goal', '')
+
+        # LLM 路径：有 LLM + 有自然语言描述
+        if self.llm_client and description:
+            try:
+                llm_patch = await self._llm_infer(start_url, description, features)
+                # LLM 结果只填充缺失字段
+                for k, v in llm_patch.items():
+                    if k not in updated or not updated[k]:
+                        updated[k] = v
+                return updated
+            except Exception as e:
+                logger.warning(f"LLM 推断失败，回退到规则: {e}")
+
+        # 规则回退路径
         patch = self.infer(features, discovered_links=discovered_links, existing_spec=updated)
         updated.update(patch)
         return updated
+
+    async def _llm_infer(
+        self, url: str, description: str, features: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """使用 LLM 理解自然语言需求并生成探索计划。"""
+        page_context = ""
+        if features.get('page_type'):
+            page_context = f"页面特征: 类型={features.get('page_type')}, " \
+                           f"SPA={features.get('is_spa', False)}, " \
+                           f"分页={features.get('has_pagination', False)}, " \
+                           f"反爬={features.get('anti_bot_level', 'none')}"
+
+        prompt = _LLM_PROMPT.format(
+            url=url,
+            description=description,
+            page_context=page_context,
+        )
+
+        response = await self.llm_client.chat([
+            {'role': 'system', 'content': '你是数据探索计划生成器。只返回 JSON，不要任何其他文字。'},
+            {'role': 'user', 'content': prompt},
+        ])
+
+        text = response.get('content', '') if isinstance(response, dict) else str(response)
+        # 提取 JSON（可能被 markdown 包裹）
+        json_match = re.search(r'\{[\s\S]*\}', text)
+        if not json_match:
+            raise ValueError(f"LLM 返回无法解析为 JSON: {text[:200]}")
+
+        result = json.loads(json_match.group())
+
+        patch: Dict[str, Any] = {}
+        if result.get('data_description'):
+            patch['data_description'] = result['data_description']
+        if result.get('exploration_plan'):
+            patch['exploration_plan'] = result['exploration_plan']
+        if result.get('success_criteria'):
+            patch['success_criteria'] = result['success_criteria']
+        if result.get('crawl_mode') in ('single_page', 'multi_page', 'full_site'):
+            patch['crawl_mode'] = result['crawl_mode']
+        if isinstance(result.get('max_pages'), (int, float)) and result['max_pages'] > 0:
+            patch['max_pages'] = int(result['max_pages'])
+        if isinstance(result.get('targets'), list) and result['targets']:
+            patch['targets'] = result['targets']
+
+        # 从 LLM 推断的 crawl_mode 推导 max_depth（如果 LLM 没给）
+        if 'crawl_mode' in patch and 'max_depth' not in patch:
+            patch['max_depth'] = _DEFAULTS.get(patch['crawl_mode'], _DEFAULTS['full_site'])['max_depth']
+
+        return patch
 
     def infer(
         self,
@@ -79,17 +178,9 @@ class SpecInferrer:
         existing_spec: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        推断并返回需要补充到 Spec 的字段字典。
+        规则推断：从页面特征推断缺失的 Spec 字段（LLM 不可用时的回退路径）。
 
         仅填充 existing_spec 中缺失或为空的字段（不覆盖用户已提供的值）。
-
-        Args:
-            features: FeatureDetector.analyze() 的返回值
-            discovered_links: ExploreAgent 发现的链接列表（可选）
-            existing_spec: 当前 Spec 字典（可选）；用于判断哪些字段需补充
-
-        Returns:
-            需要合并到 Spec 的字段字典（只含新增/补充字段）
         """
         existing = existing_spec or {}
         links = discovered_links or []
@@ -112,13 +203,13 @@ class SpecInferrer:
         if 'max_depth' not in existing:
             patch['max_depth'] = defaults['max_depth']
 
-        # 3. 推断 url_patterns（从发现的链接中提取公共路径模式）
+        # 3. 推断 url_patterns
         if not existing.get('url_patterns') and crawl_mode == 'full_site' and links:
             patterns = self._infer_url_patterns(links)
             if patterns:
                 patch['url_patterns'] = patterns
 
-        # 4. 推断 page_type（便于上层使用）
+        # 4. 推断 page_type
         if not existing.get('page_type') and features.get('page_type'):
             patch['page_type'] = features['page_type']
 
@@ -130,7 +221,7 @@ class SpecInferrer:
         if 'has_pagination' not in existing and 'has_pagination' in features:
             patch['has_pagination'] = features['has_pagination']
 
-        # 7. 推断 targets（当 spec 未提供时）
+        # 7. 推断 targets
         existing_targets = existing.get('targets')
         if not existing_targets:
             inferred_targets = self._infer_targets(features, features.get('html', ''))
@@ -148,20 +239,10 @@ class SpecInferrer:
         features: Dict[str, Any],
         links: List[str],
     ) -> str:
-        """
-        根据页面特征和链接数量推断 crawl_mode。
-
-        规则优先级（从高到低）：
-        1. 明确的 SPA 页面且无分页 → single_page（不适合递归爬取）
-        2. 有分页 → multi_page
-        3. 发现大量链接（≥5）且有重复容器 → full_site
-        4. 检查 URL 特征（如包含分页参数）→ multi_page
-        5. 默认 → full_site
-        """
+        """根据页面特征和链接数量推断 crawl_mode。"""
         is_spa = features.get('is_spa', False)
         has_pagination = features.get('has_pagination', False)
 
-        # 如果既是SPA又有分页，这可能是一个具有动态分页的SPA，仍然作为single_page处理
         if is_spa:
             return 'single_page'
 
@@ -172,17 +253,14 @@ class SpecInferrer:
         has_repeating_containers = container_info.get('found', False)
         significant_link_count = len(links) >= 5
 
-        # 更细致的 full_site 判断：需要同时满足有重复容器和相当数量的链接
         if has_repeating_containers and significant_link_count:
             return 'full_site'
 
-        # 作为补充判断，检查 URL 是否包含分页参数
         url = features.get('url', '')
         pagination_indicators = ['page=', 'p=', 'pg=', 'num=']
         if any(indicator in url.lower() for indicator in pagination_indicators):
             return 'multi_page'
 
-        # 进一步检查是否有明显的类别页面链接
         category_indicators = ['/category/', '/tag/', '/archive/', '/search/', '/page/']
         if links and any(any(indicator in link.lower() for indicator in category_indicators) for link in links):
             return 'full_site'
@@ -211,15 +289,7 @@ class SpecInferrer:
         }]
 
     def _infer_url_patterns(self, links: List[str]) -> List[str]:
-        """
-        从链接列表中提取公共路径前缀，生成 url_patterns 正则列表。
-
-        算法：
-        1. 提取所有路径
-        2. 找到出现频率最高的路径前缀（至少 2 个链接共享）
-        3. 将前缀转换为正则模式（转义特殊字符）
-        4. 最多返回 3 个模式，避免过于宽泛
-        """
+        """从链接列表中提取公共路径前缀，生成 url_patterns 正则列表。"""
         if not links:
             return []
 
@@ -236,7 +306,6 @@ class SpecInferrer:
         if not paths:
             return []
 
-        # 统计第一级路径前缀出现次数（取路径第一段）
         prefix_counts: Dict[str, int] = {}
         for path in paths:
             parts = path.strip('/').split('/')
@@ -244,7 +313,6 @@ class SpecInferrer:
                 prefix = '/' + parts[0]
                 prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
 
-        # 只保留出现 ≥2 次的前缀
         common = sorted(
             [(cnt, pfx) for pfx, cnt in prefix_counts.items() if cnt >= 2],
             reverse=True,
@@ -252,7 +320,6 @@ class SpecInferrer:
 
         patterns = []
         for _, prefix in common[:3]:
-            # 转义特殊正则字符，然后附加 .* 匹配子路径
             escaped = re.escape(prefix)
             patterns.append(f'^{escaped}')
 
@@ -264,17 +331,7 @@ class SpecInferrer:
         features: Dict[str, Any],
         discovered_links: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        便捷方法：直接将推断结果合并到 spec 并返回更新后的 spec（原地修改）。
-
-        Args:
-            spec: 当前 Spec 字典（将被原地更新）
-            features: FeatureDetector.analyze() 返回值
-            discovered_links: 可选的已发现链接列表
-
-        Returns:
-            更新后的 spec 字典
-        """
+        """便捷方法：直接将推断结果合并到 spec 并返回更新后的 spec（原地修改）。"""
         patch = self.infer(features, discovered_links, existing_spec=spec)
         spec.update(patch)
         return spec

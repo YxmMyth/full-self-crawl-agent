@@ -148,8 +148,11 @@ class SelfCrawlingAgent:
             await self.cleanup()
 
     async def _infer_spec(self, start_url: str, spec: Dict[str, Any]) -> Dict[str, Any]:
-        """自动推断 Spec 缺失字段"""
-        inferrer = SpecInferrer(self.browser)
+        """自动推断 Spec 缺失字段（LLM 主导 + 规则回退）"""
+        llm = getattr(self, 'llm_client', None)
+        if not getattr(self, '_llm_available', False):
+            llm = None
+        inferrer = SpecInferrer(self.browser, llm_client=llm)
         inferred_spec = await inferrer.infer_missing_fields(start_url, spec.copy())
         return inferred_spec
 
