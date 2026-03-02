@@ -1,0 +1,444 @@
+{
+  "success": true,
+  "crawl_mode": "full_site",
+  "results": [
+    {
+      "url": "https://codepen.io",
+      "result": {
+        "success": true,
+        "page_structure": {
+          "page_type": "list",
+          "pagination_type": "click",
+          "pagination_next_url": null,
+          "main_content_selector": "main",
+          "estimated_items": 6,
+          "complexity": "simple",
+          "has_pagination": true,
+          "content_selectors": [
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "section.HomepageAnonCards_root-tWUkd",
+            "section.HomepageAnonCommunity_root-rCnnY",
+            "section.HomepageAnonEditor_root-IeKK+",
+            "section.HomepageAnonTopics_root-FG-Ds",
+            "section.HomepageAnonTeams_root-Xivo8",
+            "div.PageLayout-module_root-rNerP",
+            "div.Sidebar-module_inner-0f4yC"
+          ]
+        },
+        "selectors": {
+          "html_structure": "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen, section.HomepageAnonCards_root-tWUkd, section.HomepageAnonCommunity_root-rCnnY, section.HomepageAnonEditor_root-IeKK\\+, section.HomepageAnonTopics_root-FG-Ds, section.HomepageAnonTeams_root-Xivo8",
+          "content_balance": "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen, div.PageLayout-module_root-rNerP, div.Sidebar-module_inner-0f4yC",
+          "visual_effects": "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen, section[class*='root']"
+        },
+        "strategy": {
+          "strategy_type": "css",
+          "page_type": "list",
+          "needs_pagination": true,
+          "pagination_strategy": "click",
+          "approach": "list",
+          "item_selector": "main",
+          "batch_size": 10
+        },
+        "extracted_data": [
+          {
+            "html_structure": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending",
+            "content_balance": "Open in EditorCustom Select List Nav Icons using appearance: base-selectChris BolsonLove70348",
+            "visual_effects": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending"
+          }
+        ],
+        "verification_result": {
+          "success": true,
+          "quality_score": 1.0,
+          "valid_items": 1,
+          "total_items": 1,
+          "verification_result": {
+            "issues": [],
+            "valid_items": 1,
+            "total_items": 1,
+            "valid_percentage": 100.0
+          },
+          "extraction_metrics": {}
+        },
+        "decision": {
+          "success": true,
+          "decision": "reflect_and_retry",
+          "reasoning": "质量分数 1.00 可提升，继续迭代 1/10",
+          "suggestions": [
+            "数据量不足，检查分页或数据容器选择器"
+          ],
+          "degradation_warning": null
+        },
+        "reflection_notes": {
+          "success": true,
+          "analysis": {
+            "error_patterns": {
+              "patterns": {},
+              "most_common": "none",
+              "total_errors": 0,
+              "failed_selectors": [],
+              "required_fields_missing": []
+            },
+            "history_summary": {
+              "summary": "无历史记录"
+            }
+          },
+          "improvements": {
+            "action": "change_strategy",
+            "reasoning": "The task is NOT a web scraping task — it's a content generation task. The goal is to USE CodePen as a tool to generate an HTML PPT-style presentation with balanced content structure and visual effects. The failure stems from misinterpreting the objective as 'scrape CodePen' rather than 'create content on CodePen'. The HTML samples show CodePen's homepage/gallery structure (article items, feature descriptions, editor prompts), which are irrelevant to the actual goal. The correct approach is to either: (1) navigate to CodePen's editor (https://codepen.io/pen/) and programmatically create an HTML/CSS/JS presentation, or (2) generate the HTML PPT code independently and optionally deploy it via CodePen. The empty error pattern `{}` and empty quality trends `[]` suggest the crawler never successfully extracted meaningful data because there was no relevant data to extract — the task requires content creation, not extraction.",
+            "selectors": {
+              "html_editor": "textarea.CodeMirror-code, .CodeMirror textarea, #box-html .CodeMirror",
+              "css_editor": "textarea.CodeMirror-code, .CodeMirror textarea, #box-css .CodeMirror",
+              "js_editor": "textarea.CodeMirror-code, .CodeMirror textarea, #box-js .CodeMirror",
+              "pen_title": "input#title, input[name='title'], .pen-title input",
+              "run_button": "button#run, button[data-test-id='run']",
+              "preview_frame": "iframe#result, iframe.result-iframe, iframe[name='CodePen']",
+              "save_button": "button#save, button[data-test-id='save']",
+              "start_coding_link": "a[href='/pen/']"
+            },
+            "container_selector": ".pen-editor, #editor, .editor-panes-container",
+            "strategy": "Completely pivot from scraping to content generation. Step 1: Navigate to https://codepen.io/pen/ (the blank editor). Step 2: Inject HTML/CSS/JS code into CodePen's editor panels to create a multi-slide PPT-style presentation. The generated HTML should include: (a) multiple slide sections using CSS scroll-snap or JS-based slide transitions, (b) balanced content per slide (title, bullet points, imagery placeholders, consistent typography), (c) visual effects like CSS transitions, animations, gradient backgrounds, and slide navigation controls. Step 3: If editor interaction via Selenium/Playwright is complex due to CodeMirror, consider generating the full standalone HTML file locally and optionally pasting it into CodePen for preview/sharing. The PPT HTML template should have 5-8 slides covering a coherent topic with consistent design language.",
+            "precautions": [
+              "CodePen's editor uses CodeMirror which wraps textareas — direct textarea.value setting won't work; use CodeMirror's API via JS injection: document.querySelector('.CodeMirror').CodeMirror.setValue(code)",
+              "CodePen may require login for saving pens — anonymous/unsigned pens can still be created but not saved permanently",
+              "The preview iframe is sandboxed — verify the generated output renders correctly by capturing the iframe content or screenshot",
+              "Rate limiting: avoid rapid repeated navigation to CodePen's editor endpoints",
+              "If CodePen blocks automation (bot detection), generate the HTML PPT locally as a standalone .html file instead",
+              "Ensure the generated PPT HTML is self-contained (inline CSS/JS) so it works in CodePen's single-file context",
+              "Balance content density: each slide should have 3-5 bullet points max, one heading, and visual whitespace"
+            ],
+            "alternative_approaches": [
+              "Generate a complete standalone HTML PPT file locally using reveal.js or impress.js patterns without CodePen dependency, then paste into CodePen for sharing",
+              "Use CodePen's API (if available) to programmatically create a pen via POST request with pre-built HTML/CSS/JS payload",
+              "Use CSS-only slide approach: sections with scroll-snap-type, :target selectors for navigation, and CSS animations for transitions — no JS dependency, cleaner for CodePen",
+              "Create the PPT using a template engine (Jinja2/Handlebars) that generates balanced slide content from structured data, then deploy to CodePen",
+              "Use Playwright/Puppeteer to automate the CodePen editor interaction: navigate to /pen/, use page.evaluate() to access CodeMirror instances and inject code, then capture the preview output",
+              "Fork an existing CodePen PPT template (e.g., search 'CSS slideshow' on CodePen) and modify its content programmatically rather than building from scratch"
+            ]
+          },
+          "suggested_action": "change_strategy",
+          "new_selectors": {
+            "html_editor": "textarea.CodeMirror-code, .CodeMirror textarea, #box-html .CodeMirror",
+            "css_editor": "textarea.CodeMirror-code, .CodeMirror textarea, #box-css .CodeMirror",
+            "js_editor": "textarea.CodeMirror-code, .CodeMirror textarea, #box-js .CodeMirror",
+            "pen_title": "input#title, input[name='title'], .pen-title input",
+            "run_button": "button#run, button[data-test-id='run']",
+            "preview_frame": "iframe#result, iframe.result-iframe, iframe[name='CodePen']",
+            "save_button": "button#save, button[data-test-id='save']",
+            "start_coding_link": "a[href='/pen/']"
+          },
+          "new_strategy": "Completely pivot from scraping to content generation. Step 1: Navigate to https://codepen.io/pen/ (the blank editor). Step 2: Inject HTML/CSS/JS code into CodePen's editor panels to create a multi-slide PPT-style presentation. The generated HTML should include: (a) multiple slide sections using CSS scroll-snap or JS-based slide transitions, (b) balanced content per slide (title, bullet points, imagery placeholders, consistent typography), (c) visual effects like CSS transitions, animations, gradient backgrounds, and slide navigation controls. Step 3: If editor interaction via Selenium/Playwright is complex due to CodeMirror, consider generating the full standalone HTML file locally and optionally pasting it into CodePen for preview/sharing. The PPT HTML template should have 5-8 slides covering a coherent topic with consistent design language."
+        },
+        "metrics": {
+          "total_items_extracted": 1,
+          "data_quality_score": 1.0,
+          "extraction_method": "standard",
+          "processing_time": 1772431422.99089
+        }
+      },
+      "depth": 0
+    },
+    {
+      "url": "https://codepen.io/",
+      "result": {
+        "success": true,
+        "page_structure": {
+          "page_type": "list",
+          "pagination_type": "click",
+          "pagination_next_url": null,
+          "main_content_selector": "main",
+          "estimated_items": 6,
+          "complexity": "simple",
+          "has_pagination": true,
+          "content_selectors": [
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen",
+            "section.HomepageAnonCards_root-tWUkd",
+            "section.HomepageAnonCommunity_root-rCnnY",
+            "section.HomepageAnonEditor_root-IeKK+",
+            "section.HomepageAnonTopics_root-FG-Ds",
+            "section.HomepageAnonTeams_root-Xivo8",
+            "div.PageLayout-module_root-rNerP",
+            "div.Sidebar-module_inner-0f4yC"
+          ]
+        },
+        "selectors": {
+          "html_structure": "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen, section.HomepageAnonCards_root-tWUkd, section.HomepageAnonCommunity_root-rCnnY, section.HomepageAnonEditor_root-IeKK\\+, section.HomepageAnonTopics_root-FG-Ds, section.HomepageAnonTeams_root-Xivo8",
+          "content_balance": "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen, div.PageLayout-module_root-rNerP, div.Sidebar-module_inner-0f4yC",
+          "visual_effects": "article.ContentGridItem-module_root-ej8Qs.single-item.single-pen, section.HomepageAnonCards_root-tWUkd, section.HomepageAnonEditor_root-IeKK\\+"
+        },
+        "strategy": {
+          "strategy_type": "css",
+          "page_type": "list",
+          "needs_pagination": true,
+          "pagination_strategy": "click",
+          "approach": "list",
+          "item_selector": "main",
+          "batch_size": 10
+        },
+        "extracted_data": [
+          {
+            "html_structure": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending",
+            "content_balance": "Open in EditorCustom Select List Nav Icons using appearance: base-selectChris BolsonLove70348",
+            "visual_effects": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending"
+          }
+        ],
+        "verification_result": {
+          "success": true,
+          "quality_score": 1.0,
+          "valid_items": 1,
+          "total_items": 1,
+          "verification_result": {
+            "issues": [],
+            "valid_items": 1,
+            "total_items": 1,
+            "valid_percentage": 100.0
+          },
+          "extraction_metrics": {}
+        },
+        "decision": {
+          "success": true,
+          "decision": "reflect_and_retry",
+          "reasoning": "质量分数 1.00 可提升，继续迭代 1/10",
+          "suggestions": [
+            "数据量不足，检查分页或数据容器选择器"
+          ],
+          "degradation_warning": null
+        },
+        "reflection_notes": {
+          "success": true,
+          "analysis": {
+            "error_patterns": {
+              "patterns": {},
+              "most_common": "none",
+              "total_errors": 0,
+              "failed_selectors": [],
+              "required_fields_missing": []
+            },
+            "history_summary": {
+              "summary": "无历史记录"
+            }
+          },
+          "improvements": {
+            "action": "change_strategy",
+            "reasoning": "The task is NOT a traditional web scraping task. The goal is to USE CodePen as a tool to GENERATE an HTML PPT-style presentation, not to scrape data FROM CodePen. The HTML samples show CodePen's homepage structure (content grid items, feature descriptions, headings), which are irrelevant to the actual objective. The error pattern statistics are empty ({}) and quality trends are empty ([]), indicating the crawler never successfully extracted meaningful data — because there is no meaningful data to scrape for this purpose. The correct approach is to programmatically create a CodePen pen (or generate standalone HTML) that renders as a PPT-style slideshow with balanced content structure and visual effects.",
+            "selectors": {
+              "editor_html_panel": "textarea#html-editor, .CodeMirror textarea, div[data-editor='html'] .CodeMirror",
+              "editor_css_panel": "textarea#css-editor, div[data-editor='css'] .CodeMirror",
+              "editor_js_panel": "textarea#js-editor, div[data-editor='js'] .CodeMirror",
+              "pen_title_input": "input[name='title'], input.pen-title-input",
+              "run_button": "button#run, button[data-test-id='run']",
+              "save_button": "button#save, button[data-test-id='save']",
+              "preview_iframe": "iframe#result, iframe.result-iframe"
+            },
+            "container_selector": "N/A — this is a content generation task, not a data extraction task",
+            "strategy": "Abandon the scraping approach entirely. Instead: (1) Navigate to https://codepen.io/pen/ to open the CodePen editor. (2) Inject HTML/CSS/JS code into the editor panels to create a PPT-style presentation. The HTML should contain multiple slide sections (<section class='slide'>), each with headings, body text, and visual elements. The CSS should implement fullscreen slide layout (100vw x 100vh per slide), transitions/animations (fade, slide-in), balanced typography, color themes, and visual effects (gradients, shadows, transforms). The JS should handle keyboard navigation (arrow keys), slide transitions, and progress indicators. (3) Alternatively, skip CodePen entirely and directly generate a self-contained HTML file that functions as a PPT-style presentation with all styles and scripts inline.",
+            "precautions": [
+              "CodePen editor requires interaction with CodeMirror instances — direct textarea input may not work; use CodeMirror API via JS injection (e.g., document.querySelector('.CodeMirror').CodeMirror.setValue(code))",
+              "Anonymous/non-logged-in users have limited save capabilities on CodePen; consider generating HTML output directly instead",
+              "The PPT HTML should be self-contained with inline CSS/JS for portability",
+              "Ensure balanced content structure: consistent slide layouts, uniform font sizes, proper whitespace, and no text overflow",
+              "Visual effects should be performant: prefer CSS transitions/animations over heavy JS animations",
+              "Test keyboard navigation (Left/Right arrows, Escape for overview) for usability",
+              "Include responsive design so slides render properly at different viewport sizes"
+            ],
+            "alternative_approaches": [
+              "Generate a standalone HTML file directly without using CodePen at all — create a complete single-file PPT presentation with embedded CSS animations (slide transitions, fade effects, zoom), structured content (title slide, content slides, summary slide), and JS-based navigation",
+              "Use CodePen's API (POST to https://codepen.io/pen/define/) to programmatically create a pre-filled pen with the PPT HTML/CSS/JS code, which returns a URL to the created pen",
+              "Use reveal.js or impress.js CDN links within a CodePen pen or standalone HTML to leverage proven presentation frameworks for professional slide transitions and balanced layouts",
+              "Create the presentation using a template approach: define a JSON data structure for slide content, then render it into HTML slides with consistent styling, ensuring content balance across all slides",
+              "Use Puppeteer/Playwright to navigate to codepen.io/pen/, programmatically fill in the three editor panels (HTML/CSS/JS) with presentation code, and capture the result via screenshot or export"
+            ]
+          },
+          "suggested_action": "change_strategy",
+          "new_selectors": {
+            "editor_html_panel": "textarea#html-editor, .CodeMirror textarea, div[data-editor='html'] .CodeMirror",
+            "editor_css_panel": "textarea#css-editor, div[data-editor='css'] .CodeMirror",
+            "editor_js_panel": "textarea#js-editor, div[data-editor='js'] .CodeMirror",
+            "pen_title_input": "input[name='title'], input.pen-title-input",
+            "run_button": "button#run, button[data-test-id='run']",
+            "save_button": "button#save, button[data-test-id='save']",
+            "preview_iframe": "iframe#result, iframe.result-iframe"
+          },
+          "new_strategy": "Abandon the scraping approach entirely. Instead: (1) Navigate to https://codepen.io/pen/ to open the CodePen editor. (2) Inject HTML/CSS/JS code into the editor panels to create a PPT-style presentation. The HTML should contain multiple slide sections (<section class='slide'>), each with headings, body text, and visual elements. The CSS should implement fullscreen slide layout (100vw x 100vh per slide), transitions/animations (fade, slide-in), balanced typography, color themes, and visual effects (gradients, shadows, transforms). The JS should handle keyboard navigation (arrow keys), slide transitions, and progress indicators. (3) Alternatively, skip CodePen entirely and directly generate a self-contained HTML file that functions as a PPT-style presentation with all styles and scripts inline."
+        },
+        "metrics": {
+          "total_items_extracted": 1,
+          "data_quality_score": 1.0,
+          "extraction_method": "standard",
+          "processing_time": 1772431483.203884
+        }
+      },
+      "depth": 1
+    },
+    {
+      "url": "https://codepen.io/pen/",
+      "result": {
+        "success": true,
+        "page_structure": {
+          "page_type": "static",
+          "pagination_type": "none",
+          "pagination_next_url": null,
+          "main_content_selector": "ul",
+          "estimated_items": 3,
+          "complexity": "medium",
+          "has_pagination": false,
+          "content_selectors": [
+            "section.editor-commands.inline-editor-commands",
+            "section.editor-commands",
+            "section.editor-commands",
+            "div.EditorHeader-module_root-cpo0V.header-wrap.HeaderWrap-module_root-PsKVw"
+          ]
+        },
+        "selectors": {
+          "html_structure": "section.editor-commands ul, div.EditorHeader-module_root-cpo0V.header-wrap.HeaderWrap-module_root-PsKVw, section.editor-commands.inline-editor-commands",
+          "content_balance": "section.editor-commands ul li, section.editor-commands.inline-editor-commands ul li",
+          "visual_effects": "section.editor-commands, div.EditorHeader-module_root-cpo0V.header-wrap.HeaderWrap-module_root-PsKVw, section.editor-commands.inline-editor-commands"
+        },
+        "strategy": {
+          "strategy_type": "css",
+          "page_type": "static",
+          "needs_pagination": false,
+          "pagination_strategy": "none",
+          "approach": "list",
+          "item_selector": "ul",
+          "batch_size": 1
+        },
+        "extracted_data": [],
+        "verification_result": {
+          "success": true,
+          "quality_score": 0.0,
+          "valid_items": 0,
+          "total_items": 0,
+          "verification_result": {
+            "issues": [],
+            "valid_items": 0,
+            "total_items": 0,
+            "valid_percentage": 0
+          },
+          "extraction_metrics": {}
+        },
+        "decision": {
+          "success": true,
+          "decision": "reflect_and_retry",
+          "reasoning": "质量分数为0.0，数据量为0，说明尚未获取到任何有效数据。当前是第0次迭代（共允许10次），还有充足的重试机会。任务目标是使用codepen.io生成HTML PPT风格的输出，需要重新分析爬取策略并进行重试，尝试正确访问和抓取codepen.io的内容或利用其功能生成所需的HTML PPT样式输出。",
+          "suggestions": [
+            "质量分数过低，检查目标字段是否正确",
+            "数据量不足，检查分页或数据容器选择器"
+          ],
+          "degradation_warning": null
+        },
+        "reflection_notes": {
+          "success": true,
+          "analysis": {
+            "error_patterns": {
+              "patterns": {},
+              "most_common": "none",
+              "total_errors": 0,
+              "failed_selectors": [],
+              "required_fields_missing": []
+            },
+            "history_summary": {
+              "summary": "无历史记录"
+            }
+          },
+          "improvements": {
+            "action": "change_strategy",
+            "reasoning": "根据HTML样本分析，当前页面是CodePen的编辑器界面（包含HTML/CSS/JS编辑器面板、Pen Settings模态框、标题'Untitled'等元素）。这不是一个可以'爬取数据'的页面，而是一个在线代码编辑工具。任务目标是'使用CodePen生成HTML PPT风格输出'，这意味着我们需要的是**向CodePen编辑器中写入代码**，而非从中爬取数据。错误模式统计为空{}、质量趋势为空[]，说明爬取任务根本没有产出有效数据——因为页面上本身就没有可爬取的目标数据。核心问题是：任务性质被错误定义为'爬取'，实际应该是'代码生成+注入/交互'。",
+            "selectors": {
+              "html_editor_textarea": ".CodeMirror textarea, #box-html .CodeMirror, .html-editor .CodeMirror-code",
+              "css_editor_textarea": ".CodeMirror textarea, #box-css .CodeMirror, .css-editor .CodeMirror-code",
+              "html_editor_container": "#box-html, .editor.html",
+              "css_editor_container": "#box-css, .editor.css",
+              "preview_iframe": "#result-iframe, iframe[name='result'], #result iframe",
+              "pen_title": "#editable-title-span, .ItemTitle-module_title-6kJVb span",
+              "settings_button": "button[aria-label='Settings'], #settings-html",
+              "html_tab": "h2.html-editor-title, h3[aria-label='HTML']",
+              "css_tab": "h3[aria-label='CSS']",
+              "run_button": "#run, button[type='submit'], .run-button"
+            },
+            "container_selector": "#box-html .CodeMirror, .editors-container, .top-boxes",
+            "strategy": "完全改变策略——从'爬取'转为'自动化代码生成与注入'。具体步骤：1) 使用Playwright/Selenium等自动化工具打开CodePen编辑器页面（https://codepen.io/pen/）；2) 定位HTML编辑器的CodeMirror实例，通过JavaScript注入PPT风格的HTML代码（包含多个slide div、导航按钮、内容结构）；3) 定位CSS编辑器，注入对应的CSS样式（全屏slide布局、过渡动画、视觉效果）；4) 等待预览iframe渲染完成；5) 从预览iframe中提取最终渲染的完整HTML；6) 或者直接在本地生成PPT风格HTML文件，完全跳过CodePen。",
+            "precautions": [
+              "CodePen编辑器使用CodeMirror，不能直接对textarea赋值，需要通过CodeMirror API注入代码：document.querySelector('.CodeMirror').CodeMirror.setValue(code)",
+              "CodePen可能需要登录才能保存Pen，但匿名编辑和预览不需要登录",
+              "预览结果在iframe中渲染，跨域限制可能阻止直接读取iframe内容",
+              "CodePen有反自动化检测，操作间需加入合理延时",
+              "CodeMirror实例可能延迟加载，需要等待编辑器完全初始化后再注入代码",
+              "PPT风格HTML应包含：slide容器、键盘/点击导航、过渡动画、响应式布局、平衡的内容结构（标题+正文+图表占位+页码）"
+            ],
+            "alternative_approaches": [
+              "方案A（推荐）：完全跳过CodePen，直接在本地用模板引擎生成PPT风格的单文件HTML（包含内联CSS和JS），这样避免了所有CodePen交互问题",
+              "方案B：使用CodePen API（https://blog.codepen.io/documentation/prefill-embeds/）通过POST请求预填充代码，生成可分享的Pen链接",
+              "方案C：使用Playwright自动化操作CodePen编辑器，通过page.evaluate()调用CodeMirror API注入HTML/CSS/JS代码，然后截图或导出预览结果",
+              "方案D：使用reveal.js、impress.js等成熟的HTML演示框架在本地生成PPT，然后将代码粘贴到CodePen作为展示",
+              "方案E：利用CodePen的Export功能（需登录），自动化完成代码注入后导出为zip包获取完整HTML文件"
+            ]
+          },
+          "suggested_action": "change_strategy",
+          "new_selectors": {
+            "html_editor_textarea": ".CodeMirror textarea, #box-html .CodeMirror, .html-editor .CodeMirror-code",
+            "css_editor_textarea": ".CodeMirror textarea, #box-css .CodeMirror, .css-editor .CodeMirror-code",
+            "html_editor_container": "#box-html, .editor.html",
+            "css_editor_container": "#box-css, .editor.css",
+            "preview_iframe": "#result-iframe, iframe[name='result'], #result iframe",
+            "pen_title": "#editable-title-span, .ItemTitle-module_title-6kJVb span",
+            "settings_button": "button[aria-label='Settings'], #settings-html",
+            "html_tab": "h2.html-editor-title, h3[aria-label='HTML']",
+            "css_tab": "h3[aria-label='CSS']",
+            "run_button": "#run, button[type='submit'], .run-button"
+          },
+          "new_strategy": "完全改变策略——从'爬取'转为'自动化代码生成与注入'。具体步骤：1) 使用Playwright/Selenium等自动化工具打开CodePen编辑器页面（https://codepen.io/pen/）；2) 定位HTML编辑器的CodeMirror实例，通过JavaScript注入PPT风格的HTML代码（包含多个slide div、导航按钮、内容结构）；3) 定位CSS编辑器，注入对应的CSS样式（全屏slide布局、过渡动画、视觉效果）；4) 等待预览iframe渲染完成；5) 从预览iframe中提取最终渲染的完整HTML；6) 或者直接在本地生成PPT风格HTML文件，完全跳过CodePen。"
+        },
+        "metrics": {
+          "total_items_extracted": 0,
+          "data_quality_score": 0.0,
+          "extraction_method": "standard",
+          "processing_time": 1772431607.407406
+        }
+      },
+      "depth": 1
+    }
+  ],
+  "extracted_data": [
+    {
+      "html_structure": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending",
+      "content_balance": "Open in EditorCustom Select List Nav Icons using appearance: base-selectChris BolsonLove70348",
+      "visual_effects": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending"
+    },
+    {
+      "html_structure": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending",
+      "content_balance": "Open in EditorCustom Select List Nav Icons using appearance: base-selectChris BolsonLove70348",
+      "visual_effects": "Build & TestGet work done quicker by building out entire projects or isolating code to test features and animations. Want to keep it all under wraps? Upgrade to a PRO account to keep your work private.Try the EditorLearn & DiscoverWant to upgrade your skills and get noticed? Participating in CodePen Challenges is a great way to try something new. We frequently feature these Pens on our homepage and across social media!Join this Week’s ChallengeShare Your WorkBecome a part of the most active front-end community in the world by sharing work. Presenting at a conference? Show your code directly in the browser with Presentation Mode.Explore Trending"
+    }
+  ],
+  "urls_visited": [
+    "https://codepen.io",
+    "https://codepen.io/pen/",
+    "https://codepen.io/"
+  ],
+  "pages_visited": 3,
+  "total_pages_processed": 3,
+  "frontier_stats": {
+    "queue_size": 0,
+    "visited_count": 0,
+    "pages_crawled": 0,
+    "total_pushed": 3,
+    "total_filtered": 48,
+    "max_depth": 1,
+    "max_pages": 3
+  },
+  "quality_score": 0.6667,
+  "summary": {
+    "total_items_extracted": 2,
+    "total_errors": 0,
+    "total_pages": 3,
+    "success_rate": 1.0
+  }
+}

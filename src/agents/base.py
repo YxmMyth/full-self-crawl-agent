@@ -99,16 +99,32 @@ def _safe_parse_json(response: str, context: str = "JSON解析") -> Dict:
     # 尝试清理 Markdown 代码块
     if '```' in response:
         import re
+        # 先尝试匹配完整的代码块
         matches = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
         if matches:
             response = matches[0].strip()
+        else:
+            # 处理未闭合的代码块（LLM 输出被截断）
+            match = re.search(r'```(?:json)?\s*([\s\S]+)', response)
+            if match:
+                response = match.group(1).strip()
 
     try:
         import json
         return json.loads(response)
-    except json.JSONDecodeError as e:
-        print(f"{context} JSON解析失败: {e}")
-        print(f"原始响应: {response[:500]}...")  # 仅打印前500字符
+    except json.JSONDecodeError:
+        # 尝试修复截断的 JSON：提取已有的关键字段
+        import re as _re
+        result = {}
+        action_m = _re.search(r'"action"\s*:\s*"([^"]+)"', response)
+        if action_m:
+            result['action'] = action_m.group(1)
+        reasoning_m = _re.search(r'"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)"', response)
+        if reasoning_m:
+            result['reasoning'] = reasoning_m.group(1)[:500]
+        if result:
+            return result
+        logger.debug(f"{context} JSON解析失败，原始响应前300字符: {response[:300]}")
         return {}
 
 

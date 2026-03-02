@@ -39,6 +39,7 @@ def load_config(config_path: Union[str, Path, None] = None) -> Dict[str, Any]:
         # 尝试多个默认位置
         possible_paths = [
             'config.yaml', 'config.json',
+            'config/settings.json', 'config/settings.yaml',
             '.config/config.yaml', '.config/config.json',
             'settings.yaml', 'settings.json'
         ]
@@ -66,19 +67,30 @@ def load_config(config_path: Union[str, Path, None] = None) -> Dict[str, Any]:
             logger.warning(f"未知的配置文件格式: {path}, 使用默认配置")
             return _get_default_config()
 
-    # 合并默认配置
+    # 深度合并默认配置
     default_config = _get_default_config()
-    return {**default_config, **(config or {})}
+    return _deep_merge(default_config, config or {})
+
+
+def _deep_merge(base: Dict, override: Dict) -> Dict:
+    """深度合并两个字典，override 优先。"""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def _get_default_config() -> Dict[str, Any]:
     """获取默认配置"""
     return {
         'llm': {
-            'provider': 'zhipu',
-            'model': 'glm-4',
+            'provider': 'openai_compatible',
+            'model': 'claude-opus-4-5-20251101',
             'api_key': '',
-            'api_base': None,
+            'api_base': 'http://45.78.224.156:3000/v1',
         },
         'browser': {
             'headless': True,

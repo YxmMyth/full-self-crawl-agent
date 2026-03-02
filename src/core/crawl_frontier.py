@@ -54,6 +54,12 @@ def canonicalize_url(url: str) -> str:
     else:
         sorted_query = ''
 
+    # 移除仅为 "/" 的路径末尾斜杠（/foo/ 保留，/ 去掉）
+    if norm_path == '/':
+        norm_path = ''
+    elif len(norm_path) > 1 and norm_path.endswith('/'):
+        norm_path = norm_path.rstrip('/')
+
     normalized = urlunparse((
         parsed.scheme,
         parsed.netloc.lower(),

@@ -234,7 +234,10 @@ HTML 样本（关键元素）：
             if hasattr(llm_client, 'reason'):
                 response = await llm_client.reason(prompt)
             else:
-                response = await llm_client.chat([{"role": "user", "content": prompt}])
+                response = await llm_client.chat(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=2048
+                )
             return _safe_parse_json(response, "LLM 反思分析")
         except Exception as e:
             print(f"LLM 反思失败: {e}")

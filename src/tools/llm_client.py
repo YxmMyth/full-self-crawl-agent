@@ -104,7 +104,7 @@ class LLMClient:
     DEFAULT_RETRY_DELAY = 1.0
     DEFAULT_RETRY_MULTIPLIER = 2.0
 
-    def __init__(self, api_key: str, model: str = 'glm-4',
+    def __init__(self, api_key: str, model: str = 'claude-opus-4-5-20251101',
                  api_base: Optional[str] = None):
         """
         初始化 LLM 客户端
@@ -112,37 +112,22 @@ class LLMClient:
         Args:
             api_key: API 密钥
             model: 模型名称
-            api_base: API 基础地址（可选，默认智谱官方端点）
+            api_base: API 基础地址（可选，默认 API Gateway）
         """
         self.api_key = api_key
         self.model = model
         self.api_url = self._get_api_url(api_base)
         # 检测 provider
         if api_base:
-            if 'dashscope' in api_base:
-                self.provider = 'alibaba'
-            elif 'deepseek' in api_base:
+            if 'deepseek' in api_base:
                 self.provider = 'deepseek'
-            elif 'bigmodel' in api_base:
-                self.provider = 'zhipu'
             else:
-                # 根据模型名称推断
-                if 'deepseek' in model.lower():
-                    self.provider = 'deepseek'
-                elif 'qwen' in model.lower():
-                    self.provider = 'alibaba'
-                elif 'glm' in model.lower():
-                    self.provider = 'zhipu'
-                else:
-                    self.provider = 'unknown'
+                self.provider = 'openai_compatible'
         else:
-            # 无 api_base，根据模型名称推断
             if 'deepseek' in model.lower():
                 self.provider = 'deepseek'
-            elif 'qwen' in model.lower():
-                self.provider = 'alibaba'
             else:
-                self.provider = 'zhipu'
+                self.provider = 'openai_compatible'
         self.client = httpx.AsyncClient(timeout=60.0)
         self.call_count = 0
         self.total_tokens = 0
@@ -152,10 +137,13 @@ class LLMClient:
     def _get_api_url(self, api_base: Optional[str]) -> str:
         """获取 API 地址"""
         if api_base:
-            return api_base.rstrip('/') + '/chat/completions'
+            base = api_base.rstrip('/')
+            if base.endswith('/chat/completions'):
+                return base
+            return base + '/chat/completions'
 
-        # 默认智谱 API
-        return 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+        # 默认 API Gateway
+        return 'http://45.78.224.156:3000/v1/chat/completions'
 
     def _classify_error(self, status_code: Optional[int], error_message: str) -> LLMError:
         """分类错误"""
@@ -325,24 +313,15 @@ class LLMClient:
             ))
 
         headers = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {self.api_key}'
         }
-
-        # 根据提供商设置认证头
-        if self.provider == 'zhipu':
-            headers['Authorization'] = f'Bearer {self.api_key}'
-        elif self.provider == 'alibaba':
-            headers['Authorization'] = f'Bearer {self.api_key}'
-            headers['X-DashScope-Async'] = 'enable'
-        else:
-            headers['Authorization'] = f'Bearer {self.api_key}'
 
         data = {
             'model': self.model,
             'messages': messages,
             'max_tokens': max_tokens,
             'temperature': temperature,
-            'top_p': top_p
         }
 
         try:

@@ -62,12 +62,21 @@ class VerifyAgent(AgentInterface):
             }
 
     def _calculate_quality_score(self, data: List[Dict], spec: Dict) -> float:
-        """计算质量分数"""
+        """计算质量分数（含去重、内容长度和字段区分度检测）"""
         if not data:
             return 0.0
 
         total_weight = 0
         weighted_score = 0
+
+        # 去重检测：完全相同的记录只计一次
+        unique_hashes = set()
+        duplicate_count = 0
+        for item in data:
+            item_hash = hash(frozenset((k, str(v)[:200]) for k, v in item.items()))
+            if item_hash in unique_hashes:
+                duplicate_count += 1
+            unique_hashes.add(item_hash)
 
         # 基于数据完整性计算分数
         for item in data:
@@ -80,11 +89,15 @@ class VerifyAgent(AgentInterface):
                     field_name = field['name']
                     required = field.get('required', False)
 
-                    if field_name in item and item[field_name]:
-                        item_score += 1
+                    value = item.get(field_name)
+                    if value:
+                        # 内容最低长度检测（纯文本至少 10 字符才算有效）
+                        if isinstance(value, str) and len(value.strip()) < 10:
+                            item_score += 0.3
+                        else:
+                            item_score += 1
                     elif required:
-                        # 如果字段是必需的但是空的，则扣分
-                        pass
+                        pass  # 必需字段缺失不加分
 
                     field_count += 1
 
@@ -96,7 +109,13 @@ class VerifyAgent(AgentInterface):
                         field_name = field['name']
                         required = field.get('required', False)
                         if required and field_name in item and not item[field_name]:
-                            item_score *= 0.7  # 降低分数
+                            item_score *= 0.7
+
+                # 字段区分度惩罚：如果多个字段值相同，降低分数
+                values = [str(v)[:200] for v in item.values() if v]
+                if len(values) > 1 and len(set(values)) < len(values):
+                    dup_ratio = 1 - (len(set(values)) / len(values))
+                    item_score *= (1 - dup_ratio * 0.5)
 
                 weighted_score += item_score
                 total_weight += 1
@@ -105,9 +124,14 @@ class VerifyAgent(AgentInterface):
         min_expected = spec.get('completion_criteria', {}).get('min_items', 1)
         volume_factor = min(len(data) / min_expected, 1.0) if min_expected > 0 else 1.0
 
-        final_score = (weighted_score / total_weight if total_weight > 0 else 0) * volume_factor
+        # 记录间去重惩罚
+        if len(data) > 1:
+            dedup_factor = 1 - (duplicate_count / len(data)) * 0.8
+        else:
+            dedup_factor = 1.0
 
-        # 确保分数在合理范围内
+        final_score = (weighted_score / total_weight if total_weight > 0 else 0) * volume_factor * dedup_factor
+
         return max(0.0, min(1.0, final_score))
 
     def _check_validation_rules(self, data: List[Dict], spec: Dict) -> Dict[str, Any]:

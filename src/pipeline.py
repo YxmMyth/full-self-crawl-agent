@@ -30,6 +30,7 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
         'llm_client': context.get('llm_client'),
         'sandbox': context.get('sandbox'),
         'agent_pool': agent_pool,
+        'reflect_hints': context.get('reflect_hints', {}),
 
         # 流水线中间结果
         'page_structure': {},
@@ -59,9 +60,16 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
 
         # 2. Plan (规划) - 规划提取策略
         print("2. 正在规划提取策略...")
+        reflect_hints = context.get('reflect_hints', {})
         plan_context = {**pipeline_context,
                         'page_structure': sense_result.get('structure', {}),
-                        'sense_features': sense_result.get('features', {})}
+                        'sense_features': sense_result.get('features', {}),
+                        'reflect_hints': reflect_hints}
+        # 如果前一页的 reflect 建议了新选择器，注入到规划上下文
+        if reflect_hints.get('suggested_selectors'):
+            plan_context['previous_selectors'] = reflect_hints['suggested_selectors']
+        if reflect_hints.get('previous_reasoning'):
+            plan_context['previous_reflect_reasoning'] = reflect_hints['previous_reasoning']
         plan_result = await agent_pool.execute_capability(
             AgentCapability.PLAN,
             plan_context
@@ -82,6 +90,18 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
         sense_features = sense_result.get('features', {})
         is_spa = sense_features.get('is_spa', False)
         extraction_method = 'standard'
+
+        # SPA 页面：等待动态内容加载后再提取
+        if is_spa and hasattr(browser, 'wait_for_content'):
+            try:
+                container_sel = plan_result.get('strategy', {}).get('container_selector')
+                await browser.wait_for_content(
+                    min_elements=2,
+                    container_selector=container_sel,
+                    timeout=8000
+                )
+            except Exception:
+                pass
 
         act_context = {**pipeline_context,
                       'selectors': plan_result.get('selectors', {}),
@@ -211,7 +231,9 @@ async def run_spa_extraction(context: Dict[str, Any]) -> Dict[str, Any]:
         await browser.page.wait_for_timeout(2000)  # 额外等待时间确保JS执行完成
 
         # 获取API数据
-        api_data = spa_handler.get_api_data()
+        api_data = spa_handler.get_best_list_data()
+        # 统一为 dict 格式以便后续判断
+        api_data = {'list_data': api_data} if api_data else None
 
         # 如果没有通过拦截获得数据，尝试DOM提取
         if not api_data or not api_data.get('list_data'):

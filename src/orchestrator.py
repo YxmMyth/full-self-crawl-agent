@@ -5,6 +5,7 @@ Orchestrator - SelfCrawlingAgent核心编排逻辑
 
 import asyncio
 import inspect
+import json
 import sys
 import os
 import logging
@@ -14,7 +15,7 @@ from datetime import datetime
 import time
 
 from .agents.base import AgentPool, AgentCapability
-from .core.crawl_frontier import CrawlFrontier
+from .core.crawl_frontier import CrawlFrontier, canonicalize_url
 from .core.context_compressor import ContextCompressor
 from .core.state_manager import StateManager
 from .config.loader import load_config
@@ -41,6 +42,13 @@ class SelfCrawlingAgent:
 
         llm_cfg = self.config.get('llm', {})
         api_key = llm_cfg.get('api_key', '')
+        # 从环境变量读取 API key（优先级：config > API_GATEWAY_KEY > DEEPSEEK_API_KEY）
+        if not api_key or not api_key.strip():
+            for env_var in ['API_GATEWAY_KEY', 'DEEPSEEK_API_KEY']:
+                api_key = os.environ.get(env_var, '')
+                if api_key and api_key.strip():
+                    logger.info(f"从环境变量 {env_var} 读取 API key")
+                    break
         if not api_key or not api_key.strip():
             logger.warning(
                 "LLM API key 未设置或为空。Agent 将以纯确定性模式运行（无 LLM 规划/分析），"
@@ -48,8 +56,8 @@ class SelfCrawlingAgent:
             )
         self.llm_client = LLMClient(
             api_key=api_key,
-            model=llm_cfg.get('model', 'glm-4'),
-            api_base=llm_cfg.get('api_base')
+            model=llm_cfg.get('model', 'claude-opus-4-5-20251101'),
+            api_base=llm_cfg.get('api_base') or llm_cfg.get('base_url')
         )
         self._llm_available = bool(api_key and api_key.strip())
         sandbox_cfg = self.config.get('sandbox', {})
@@ -255,6 +263,7 @@ class SelfCrawlingAgent:
 
         qs = [r.get('result', {}).get('verification_result', {}).get('quality_score', 0.0)
               for r in all_results if r.get('result', {}).get('success')]
+        extracted_data = self._deduplicate_records(extracted_data)
         return {
             'success': True,
             'crawl_mode': crawl_mode,
@@ -389,6 +398,8 @@ class SelfCrawlingAgent:
         all_results = []
         visited_urls = set()
         explore_agent = ExploreAgent()
+        # 跨页面传递 reflect 改进建议
+        reflect_hints = {}
 
         while len(visited_urls) < max_pages and not self.frontier.is_empty():
             # 获取下一个要处理的 URL
@@ -398,10 +409,12 @@ class SelfCrawlingAgent:
             next_url = next_item.url
             next_depth = next_item.depth
 
-            if next_url in visited_urls:
+            # 规范化 URL 用于去重
+            canonical = canonicalize_url(next_url)
+            if canonical in visited_urls:
                 continue
 
-            visited_urls.add(next_url)
+            visited_urls.add(canonical)
 
             print(f"处理 URL (深度 {next_depth}): {next_url}")
 
@@ -430,6 +443,7 @@ class SelfCrawlingAgent:
                     'llm_client': llm,
                     'sandbox': getattr(self, 'sandbox', None),
                     'agent_pool': self.agent_pool,
+                    'reflect_hints': reflect_hints,
                 })
 
                 # 收集结果
@@ -439,11 +453,22 @@ class SelfCrawlingAgent:
                     'depth': next_depth
                 })
 
+                # 提取 reflect 改进建议传递给下一页
+                reflection = page_result.get('reflection_notes', {})
+                improvements = reflection.get('improvements', {})
+                if improvements.get('action') == 'change_strategy':
+                    reflect_hints = {
+                        'previous_reasoning': improvements.get('reasoning', ''),
+                        'suggested_selectors': improvements.get('selectors', {}),
+                        'suggested_strategy': improvements.get('strategy', ''),
+                        'alternative_approaches': improvements.get('alternative_approaches', []),
+                    }
+
                 # 从结果中提取新链接并添加到前沿
                 if page_result.get('success') and 'extracted_data' in page_result:
                     new_links = await self._extract_links_from_result(page_result)
                     for link in new_links:
-                        if link not in visited_urls and (next_depth + 1) <= max_depth:
+                        if canonicalize_url(link) not in visited_urls and (next_depth + 1) <= max_depth:
                             self.frontier.push(link, depth=next_depth + 1, priority=50)
 
                 # 兼容旧逻辑：调用 ExploreAgent 探索链接并推入 frontier
@@ -471,6 +496,9 @@ class SelfCrawlingAgent:
                 page_quality = page_result.get('metrics', {}).get('data_quality_score')
             if page_quality is not None and isinstance(page_quality, (int, float)):
                 quality_scores.append(float(page_quality))
+
+        # 记录级去重：按内容哈希去除完全相同的记录
+        extracted_data = self._deduplicate_records(extracted_data)
 
         # 按页面加权平均计算整体质量（无分数时回退到 0.0）
         avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
@@ -504,6 +532,29 @@ class SelfCrawlingAgent:
             print(f"提取链接时发生错误: {e}")
 
         return links
+
+    @staticmethod
+    def _deduplicate_records(records: List[Dict]) -> List[Dict]:
+        """去除完全相同的记录和空记录，保持原始顺序。"""
+        import hashlib
+        seen = set()
+        unique = []
+        for rec in records:
+            # 跳过空记录：所有值为空或缺失
+            non_empty_vals = [v for v in rec.values() if v and str(v).strip()]
+            if not non_empty_vals:
+                continue
+            # 使用所有值的排序元组作为唯一性标识
+            try:
+                key = hashlib.md5(
+                    json.dumps(rec, sort_keys=True, default=str).encode()
+                ).hexdigest()
+            except Exception:
+                key = str(sorted(rec.items()))
+            if key not in seen:
+                seen.add(key)
+                unique.append(rec)
+        return unique
 
     def _summarize_results(self, results: List[Dict]) -> Dict[str, Any]:
         """汇总结果统计"""

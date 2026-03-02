@@ -39,17 +39,41 @@ class ActAgent(AgentInterface):
         try:
             extracted_data = []
             errors = []
+            strategy_type = strategy.get('strategy_type', 'css')
 
-            if crawl_mode == 'multi_page':
-                # 处理分页
-                extracted_data = await self._extract_with_pagination(
-                    browser, selectors, strategy, max_pages
-                )
-            elif crawl_mode == 'full_site':
-                # 在 full_site 模式下调用简单提取
-                extracted_data = await self._extract_simple(browser, selectors, strategy)
-            else:  # single_page
-                extracted_data = await self._extract_simple(browser, selectors, strategy)
+            # 策略为 LLM 时优先使用 LLM 提取
+            llm_client = context.get('llm_client')
+            spec = context.get('spec', {})
+            if strategy_type == 'llm' and llm_client:
+                try:
+                    extracted_data = await self._extract_with_llm(
+                        browser, llm_client, spec.get('targets', []),
+                        context.get('html_snapshot', '')
+                    )
+                except Exception as e:
+                    logger.debug(f"LLM 主提取失败, 降级为 CSS: {e}")
+
+            # CSS 选择器提取（LLM 策略时作为补充；CSS 策略时作为主方法）
+            if not extracted_data:
+                if crawl_mode == 'multi_page':
+                    extracted_data = await self._extract_with_pagination(
+                        browser, selectors, strategy, max_pages
+                    )
+                else:
+                    extracted_data = await self._extract_simple(browser, selectors, strategy)
+
+            # CSS 提取结果不佳时自动回退到 LLM（无论策略类型）
+            if llm_client and len(extracted_data) < 3 and strategy_type != 'llm':
+                try:
+                    llm_data = await self._extract_with_llm(
+                        browser, llm_client, spec.get('targets', []),
+                        context.get('html_snapshot', '')
+                    )
+                    if len(llm_data) > len(extracted_data):
+                        logger.info(f"LLM 提取更优: {len(llm_data)} 条 (CSS: {len(extracted_data)} 条)")
+                        extracted_data = llm_data
+                except Exception as e:
+                    logger.debug(f"LLM 提取回退失败: {e}")
 
             zip_fallback = None
             if self._should_try_zip_fallback(extracted_data, selectors):
@@ -193,6 +217,14 @@ class ActAgent(AgentInterface):
                 })
         return records
 
+    # 字段名中含这些关键词时，提取 HTML 源码而非纯文本
+    _HTML_FIELD_HINTS = {'html', 'code', 'source', 'markup', 'template', 'structure', 'snippet'}
+
+    def _should_extract_html(self, field_name: str) -> bool:
+        """判断字段是否应提取 HTML 源码"""
+        name_lower = field_name.lower()
+        return any(hint in name_lower for hint in self._HTML_FIELD_HINTS)
+
     async def _extract_simple(self, browser, selectors: Dict[str, str],
                              strategy: Dict[str, Any]) -> List[Dict[str, Any]]:
         """简单提取（单页）"""
@@ -201,9 +233,25 @@ class ActAgent(AgentInterface):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, 'html.parser')
 
-        # 获取项目容器
-        item_selector = strategy.get('item_selector', 'div')
-        items = soup.select(item_selector) if item_selector else [soup]
+        # 获取项目容器 — 优先用 container_selector 精确定位
+        container_selector = strategy.get('container_selector') or strategy.get('item_selector', 'div')
+        items = soup.select(container_selector) if container_selector else [soup]
+        # 如果容器太宽泛（只匹配到 1 个且是 body/main/html），尝试用首个 target selector 的父级
+        if len(items) == 1 and items[0].name in ('html', 'body', 'main', 'div') and selectors:
+            first_sel = next(iter(selectors.values()), None)
+            if first_sel:
+                sub_items = soup.select(first_sel)
+                if len(sub_items) > 1:
+                    items = [el.parent for el in sub_items if el.parent]
+                    # 去重保持顺序
+                    seen_ids = set()
+                    unique = []
+                    for it in items:
+                        oid = id(it)
+                        if oid not in seen_ids:
+                            seen_ids.add(oid)
+                            unique.append(it)
+                    items = unique
 
         extracted = []
         for item in items:
@@ -211,10 +259,15 @@ class ActAgent(AgentInterface):
             for field_name, selector in selectors.items():
                 try:
                     element = item.select_one(selector)
+                    # 回退：容器内找不到时在全局搜索
+                    if not element:
+                        element = soup.select_one(selector)
                     if element:
-                        # 检查元素是否具有 href 或 src 属性
                         if element.has_attr('href') or element.has_attr('src'):
                             value = element.get('href') or element.get('src') or element.get_text().strip()
+                        elif self._should_extract_html(field_name):
+                            # 结构/代码类字段提取 HTML 源码
+                            value = str(element)
                         else:
                             value = element.get_text().strip()
                     else:
@@ -222,7 +275,7 @@ class ActAgent(AgentInterface):
 
                     data[field_name] = value
                 except Exception as e:
-                    print(f"提取字段 {field_name} 失败: {e}")
+                    logger.debug(f"提取字段 {field_name} 失败: {e}")
                     data[field_name] = ''
 
             # 只添加包含至少一个非空字段的项目
@@ -420,6 +473,88 @@ class ActAgent(AgentInterface):
                 return []
         else:
             logger.warning(f"代码执行失败: {result['stderr'][:200]}")
+            return []
+
+    async def _extract_with_llm(self, browser, llm_client, targets: List[Dict],
+                                html_snapshot: str = '') -> List[Dict[str, Any]]:
+        """
+        LLM 驱动的数据提取：将页面 HTML 发送给 LLM，由其直接提取结构化数据。
+        当 CSS 选择器提取效果不佳时作为备选方案。
+        """
+        # 获取页面 HTML（优先用已有快照，减少浏览器调用）
+        html = html_snapshot or await browser.get_html()
+        # 截断到合理长度（约 12K tokens）
+        max_chars = 15000
+        if len(html) > max_chars:
+            html = html[:max_chars] + '\n<!-- ... truncated ... -->'
+
+        # 构建目标字段描述
+        field_descriptions = []
+        for target in targets:
+            for field in target.get('fields', []):
+                field_descriptions.append(
+                    f"- {field['name']}: {field.get('description', field['name'])}"
+                )
+        if not field_descriptions:
+            return []
+
+        fields_text = '\n'.join(field_descriptions)
+        field_names = [f['name'] for t in targets for f in t.get('fields', [])]
+
+        prompt = f"""Analyze this HTML page and extract structured data matching the required fields.
+
+Required fields:
+{fields_text}
+
+Rules:
+1. Return a JSON array of objects, each object having the required field names as keys.
+2. Extract ALL matching records you can find on the page.
+3. For fields about HTML/code/structure, include the actual HTML markup.
+4. For text fields, extract clean readable text.
+5. If a field value is not found for a record, use empty string "".
+6. Return ONLY the JSON array, no explanation.
+
+HTML:
+{html}"""
+
+        try:
+            response = await llm_client.generate(
+                prompt=prompt,
+                system_prompt="You are a precise data extraction assistant. Return only valid JSON arrays.",
+                max_tokens=4096,
+                temperature=0.1
+            )
+
+            # 解析 LLM 返回的 JSON
+            parsed = _safe_parse_json(response)
+            if isinstance(parsed, list):
+                records = parsed
+            elif isinstance(parsed, dict):
+                # LLM 可能返回 {"data": [...]} 或 {"records": [...]}
+                for key in ('data', 'records', 'items', 'results'):
+                    if isinstance(parsed.get(key), list):
+                        records = parsed[key]
+                        break
+                else:
+                    records = [parsed]
+            else:
+                return []
+
+            # 过滤：只保留含有至少一个目标字段且非空的记录
+            valid_records = []
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                # 只保留目标字段
+                filtered = {k: str(v) for k, v in rec.items() if k in field_names and v}
+                if filtered:
+                    valid_records.append(filtered)
+
+            logger.info(f"LLM 提取: {len(valid_records)} 条有效记录 (原始 {len(records)})")
+            return valid_records
+
+        except Exception as e:
+            logger.warning(f"LLM 提取失败: {e}")
             return []
 
     def get_description(self) -> str:

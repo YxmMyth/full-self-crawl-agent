@@ -26,6 +26,60 @@ setup_logging(level=os.getenv('LOG_LEVEL', 'INFO'))
 logger = get_logger('main')
 
 
+def _save_results(spec: dict, result: dict):
+    """持久化爬取结果到 evidence 目录"""
+    try:
+        import json as _json
+        from src.tools.storage import EvidenceStorage
+
+        task_id = spec.get('task_id', 'unnamed_task')
+        storage = EvidenceStorage('./evidence')
+        storage.create_task_dir(task_id)
+
+        # 保存提取数据
+        extracted = result.get('extracted_data', [])
+        if extracted:
+            storage.save_data(extracted, 'extracted_data.json')
+            logger.info(f"数据已保存到 evidence/{task_id}/data/extracted_data.json")
+
+        # 保存完整结果摘要（过滤不可序列化内容）
+        def _safe(obj):
+            if isinstance(obj, bytes):
+                return f'<bytes:{len(obj)}>'
+            if isinstance(obj, set):
+                return list(obj)
+            return str(obj)
+
+        summary = {
+            'success': result.get('success'),
+            'quality_score': result.get('quality_score', 0),
+            'pages_visited': result.get('pages_visited', 0),
+            'urls_visited': result.get('urls_visited', []),
+            'total_records': len(extracted),
+            'crawl_mode': result.get('crawl_mode', 'unknown'),
+            'summary': result.get('summary', {}),
+        }
+        summary_path = storage.current_task_dir / 'data' / 'run_summary.json'
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            _json.dump(summary, f, ensure_ascii=False, indent=2, default=_safe)
+
+        # 保存每页详细结果
+        for i, page_r in enumerate(result.get('results', [])):
+            page_data = {
+                'url': page_r.get('url', ''),
+                'depth': page_r.get('depth', 0),
+                'extracted_data': page_r.get('result', {}).get('extracted_data', []),
+                'quality_score': page_r.get('result', {}).get('verification_result', {}).get('quality_score'),
+                'reflection': page_r.get('result', {}).get('reflection_notes', {}).get('improvements', {}),
+            }
+            page_path = storage.current_task_dir / 'data' / f'page_{i}.json'
+            with open(page_path, 'w', encoding='utf-8') as f:
+                _json.dump(page_data, f, ensure_ascii=False, indent=2, default=_safe)
+
+    except Exception as e:
+        logger.warning(f"保存结果失败: {e}")
+
+
 def main():
     """CLI 入口"""
     import argparse
@@ -92,12 +146,16 @@ def main():
             logger.info(f"迭代次数: {result.get('iterations', 'N/A')}")
             logger.info(f"质量分数: {result.get('quality_score', 0):.2f}")
 
+            # 持久化结果到 evidence 目录
+            _save_results(spec, result)
+
             if args.debug:
                 logger.debug(f"详细信息: {result.get('verification', {})}")
         else:
             logger.error(f"任务失败: {result.get('error', '未知错误')}")
             if result.get('extracted_data'):
                 logger.info(f"部分数据: {len(result['extracted_data'])} 条")
+                _save_results(spec, result)
 
     except KeyboardInterrupt:
         logger.warning("任务被用户中断")

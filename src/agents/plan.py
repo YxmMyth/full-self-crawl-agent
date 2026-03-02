@@ -58,12 +58,12 @@ class PlanAgent(AgentInterface):
 
             # 2. 生成选择器策略
             selectors = await self._generate_selectors(
-                page_structure, targets, llm_client
+                page_structure, targets, llm_client, context=context
             )
 
             # 3. 确定提取策略
             strategy = self._determine_extraction_strategy(
-                page_structure, targets
+                page_structure, targets, context=context
             )
 
             result = {
@@ -105,13 +105,27 @@ class PlanAgent(AgentInterface):
         return [{'name': 'items', 'fields': fields}]
 
     async def _generate_selectors(self, structure: Dict, targets: List[Dict],
-                                 llm_client) -> Dict[str, str]:
+                                 llm_client, context: Dict = None) -> Dict[str, str]:
         """生成提取选择器"""
+        if context is None:
+            context = {}
         if not llm_client:
             # 降级：基于结构特征生成基础选择器
             return self._generate_fallback_selectors(structure, targets)
 
         try:
+            # 构建 prompt，注入前一页 reflect 的改进建议
+            reflect_section = ""
+            previous_selectors = context.get('previous_selectors', {})
+            previous_reasoning = context.get('previous_reflect_reasoning', '')
+            if previous_reasoning or previous_selectors:
+                reflect_section = f"""
+前一页的反思改进建议：
+推理: {previous_reasoning[:500]}
+建议选择器: {json.dumps(_json_safe(previous_selectors), ensure_ascii=False) if previous_selectors else '无'}
+请参考上述建议优化本页的提取策略。
+"""
+
             prompt = f"""根据页面结构为以下目标生成CSS选择器：
 
 页面结构：
@@ -119,7 +133,7 @@ class PlanAgent(AgentInterface):
 
 目标字段：
 {json.dumps(_json_safe(targets), ensure_ascii=False)}
-
+{reflect_section}
 请输出 JSON 格式：
 {{
     "field_name": "CSS选择器",
@@ -180,14 +194,22 @@ class PlanAgent(AgentInterface):
 
         return selectors
 
-    def _determine_extraction_strategy(self, structure: Dict, targets: List[Dict]) -> Dict[str, Any]:
+    def _determine_extraction_strategy(self, structure: Dict, targets: List[Dict],
+                                       context: Dict = None) -> Dict[str, Any]:
         """确定提取策略"""
         page_type = structure.get('page_type', 'unknown')
         has_pagination = structure.get('has_pagination', False)
         pagination_type = structure.get('pagination_type', 'none')
 
+        strategy_type = 'css'
+        # 当 reflect 建议更换策略时，升级为 LLM 驱动提取
+        if context:
+            reflect_hints = context.get('reflect_hints', {})
+            if reflect_hints.get('change_strategy') or reflect_hints.get('strategy_type') == 'llm':
+                strategy_type = 'llm'
+
         strategy = {
-            'strategy_type': 'css',  # 目前主要是 CSS 选择器
+            'strategy_type': strategy_type,
             'page_type': page_type,
             'needs_pagination': has_pagination,
             'pagination_strategy': pagination_type if has_pagination else 'none',
