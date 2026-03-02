@@ -12,37 +12,44 @@
 full-self-crawl-agent/
 ├── src/                          # 源代码
 │   ├── __init__.py
-│   ├── main.py
+│   ├── main.py                   # CLI 入口
+│   ├── orchestrator.py           # 核心编排器
+│   ├── pipeline.py               # 单页处理流水线
+│   ├── run_mode.py               # 运行模式检测
 │   ├── config/                   # 契约配置
 │   ├── core/                     # 核心组件
 │   ├── agents/                   # 智能体
 │   ├── executors/                # 执行器
 │   ├── tools/                    # 工具层
-│   └── utils/                    # 工具函数
-├── tests/                        # 统一测试目录
-│   ├── __init__.py
+│   ├── api/                      # API 接口
+│   └── monitoring/               # 监控组件
+├── tests/                        # 测试目录
 │   ├── unit/                     # 单元测试
-│   └── integration/              # 集成测试
-├── docs/                         # 统一文档目录
-│   ├── README.md
+│   ├── integration/              # 集成测试
+│   ├── e2e/                      # 端到端测试
+│   └── specs/                    # 测试用 Spec
+├── docs/                         # 文档目录
 │   ├── architecture/
 │   ├── design/
 │   ├── guides/
-│   └── ...
-├── specs/                        # 统一 Spec 契约目录
+│   ├── implementation/
+│   ├── release/
+│   └── testing/
+├── specs/                        # Spec 契约目录
 │   ├── ecommerce/
 │   ├── news/
 │   └── templates/
-├── examples/                     # 示例代码
-│   └── quick_start.py
-├── scripts/                      # 脚本工具
+├── examples/                     # 示例 Spec
+├── scripts/                      # 工具脚本
 ├── config/                       # 运行时配置文件
 ├── .env.example                  # 环境变量模板
-├── .gitignore
 ├── pyproject.toml                # 项目配置
 ├── pytest.ini
 ├── requirements.txt
-├── LICENSE                       # 许可证文件
+├── run_task.py                   # 一键执行脚本
+├── docker-compose.yml
+├── Dockerfile / Dockerfile.dev / Dockerfile.sandbox
+├── LICENSE
 └── README.md
 ```
 

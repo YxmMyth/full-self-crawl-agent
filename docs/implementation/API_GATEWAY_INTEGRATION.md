@@ -12,8 +12,8 @@
 
 ### 1. 新增文件
 - `src/tools/api_gateway_client.py`: 实现了对API网关的支持
-- `CONFIGURATION_INSTRUCTIONS.md`: 配置说明文档
-- `setup_and_test_api_clean.py`: 配置和测试脚本
+- `docs/guides/CONFIGURATION.md`: 配置说明文档
+- `scripts/setup_and_test_api_clean.py`: 配置和测试脚本
 
 ### 2. 修改文件
 - `src/tools/multi_llm_client.py`: 集成API网关作为首选提供商，移除了GLM（已废弃）

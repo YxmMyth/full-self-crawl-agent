@@ -59,4 +59,5 @@ Repository = "https://github.com/username/full-self-crawl-agent"
 self-crawl-agent = "src.main:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["src*"]

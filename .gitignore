@@ -46,9 +46,10 @@ Thumbs.db
 htmlcov/
 .tox/
 
-# Evidence and State (generated during runtime)
+# Evidence, State, and Reports (generated during runtime)
 evidence/
 states/
+reports/
 *.log
 
 # Local environment
@@ -63,4 +64,7 @@ states/
 *.tmp
 tmp/
 temp/
+
+# Debug artifacts
+e2e_result_debug.json
 

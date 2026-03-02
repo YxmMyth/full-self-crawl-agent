@@ -5,10 +5,16 @@
 PROJECT_STRUCTURE = '''
 full-self-crawl-agent/
 ├── src/                          # 源代码
+│   ├── __init__.py
+│   ├── main.py                   # CLI 入口
+│   ├── orchestrator.py           # 核心编排器
+│   ├── pipeline.py               # 单页处理流水线
+│   ├── run_mode.py               # 运行模式检测
 │   ├── config/                   # 契约配置
 │   │   ├── __init__.py
 │   │   ├── contracts.py          # 契约定义（SpecContract, StateContract）
-│   │   └── loader.py             # 契约加载器
+│   │   ├── loader.py             # 契约加载器
+│   │   └── validator.py          # 契约验证器
 │   │
 │   ├── core/                     # 核心组件（战略层 + 管理层 + 验证层）
 │   │   ├── __init__.py
@@ -18,43 +24,68 @@ full-self-crawl-agent/
 │   │   ├── state_manager.py      # 状态管理器（管理层）
 │   │   ├── context_compressor.py # 上下文压缩器（管理层）
 │   │   ├── risk_monitor.py       # 风险监控器（管理层）
-│   │   └── verifier.py           # 验证器 + 证据收集器（验证层）
+│   │   ├── crawl_frontier.py     # 爬取前沿队列
+│   │   ├── spec_inferrer.py      # Spec 自动推断
+│   │   ├── verifier.py           # 验证器 + 证据收集器（验证层）
+│   │   └── logging.py            # 日志配置
 │   │
 │   ├── agents/                   # 智能体（执行层）
 │   │   ├── __init__.py
-│   │   └── base.py               # 7种智能体能力
-│   │       ├── SenseAgent        # 感知页面
-│   │       ├── PlanAgent         # 规划策略
-│   │       ├── ActAgent          # 执行提取
-│   │       ├── VerifyAgent       # 验证质量
-│   │       ├── JudgeAgent        # 做出决策
-│   │       ├── ExploreAgent      # 探索链接
-│   │       └── ReflectAgent      # 反思优化
+│   │   ├── base.py               # AgentPool + 7种智能体能力
+│   │   ├── sense.py              # SenseAgent - 感知页面
+│   │   ├── plan.py               # PlanAgent - 规划策略
+│   │   ├── act.py                # ActAgent - 执行提取
+│   │   ├── verify.py             # VerifyAgent - 验证质量
+│   │   ├── judge.py              # JudgeAgent - 做出决策
+│   │   ├── explore.py            # ExploreAgent - 探索链接
+│   │   ├── reflect.py            # ReflectAgent - 反思优化
+│   │   └── spa_handler.py        # SPA 页面处理
 │   │
 │   ├── executors/                # 执行器（执行层）
 │   │   ├── __init__.py
 │   │   └── executor.py           # 代码执行器 + 沙箱
-│   │       ├── Executor
-│   │       ├── DefaultSandbox
-│   │       ├── DockerSandbox
-│   │       └── CodeGenerator
 │   │
 │   ├── tools/                    # 工具层
 │   │   ├── __init__.py
 │   │   ├── browser.py            # 浏览器工具（Playwright）
-│   │   ├── llm_client.py         # LLM 客户端（智谱 GLM）
+│   │   ├── llm_client.py         # LLM 客户端
+│   │   ├── multi_llm_client.py   # 多 LLM 客户端
+│   │   ├── llm_circuit_breaker.py # LLM 断路器
+│   │   ├── api_gateway_client.py # API 网关客户端
 │   │   ├── parser.py             # HTML 解析器（BeautifulSoup）
+│   │   ├── downloader.py         # 文件下载器
 │   │   └── storage.py            # 存储工具（证据/状态/配置）
 │   │
-│   ├── main.py                   # 主入口
-│   └── __init__.py
+│   ├── api/                      # API 接口
+│   │   └── monitoring_api.py     # 监控 API
+│   │
+│   └── monitoring/               # 监控组件
+│       ├── metrics_collector.py  # 指标收集
+│       └── progress_tracker.py   # 进度追踪
 │
-├── config/                       # 配置文件
+├── tests/                        # 测试
+│   ├── unit/                     # 单元测试
+│   ├── integration/              # 集成测试
+│   ├── e2e/                      # 端到端测试
+│   └── specs/                    # 测试用 Spec
+│
+├── docs/                         # 文档
+│   ├── architecture/             # 架构文档
+│   ├── design/                   # 设计文档
+│   ├── guides/                   # 使用指南
+│   ├── implementation/           # 实现文档
+│   ├── release/                  # 发布说明
+│   └── testing/                  # 测试文档
+│
+├── config/                       # 运行时配置文件
 │   ├── settings.json            # 系统配置
 │   └── policies.json            # 策略配置
 │
 ├── specs/                        # Spec 契约定义
-│   └── *.yaml                   # 任务契约文件
+│   ├── ecommerce/
+│   ├── news/
+│   ├── templates/
+│   └── test_sites/
 │
 ├── examples/                     # 示例契约
 │   ├── example_ecommerce.yaml
@@ -62,38 +93,22 @@ full-self-crawl-agent/
 │   └── example_real_estate.yaml
 │
 ├── scripts/                      # 工具脚本
-│   ├── __init__.py
 │   ├── initialize.py            # 项目初始化
-│   └── setup.sh                 # 安装脚本
+│   ├── setup.sh                 # 安装脚本
+│   └── ...                      # 验证和测试运行脚本
 │
-├── tests/                        # 测试
-│   └── (待实现)
-│
-├── evidence/                     # 证据存储（自动生成）
-│   └── {task_id}/
-│       ├── screenshots/
-│       ├── html/
-│       ├── data/
-│       ├── logs/
-│       └── metrics/
-│
-├── states/                       # 状态存储（自动生成）
-│   └── *.json
-│
-├── logs/                         # 应用日志
-│   └── app.log
-│
-├── docker-compose.yml           # Docker 配置
-├── Dockerfile.sandbox          # 沙箱环境
-├── Dockerfile.dev              # 开发环境
-├── requirements.txt            # Python 依赖
-├── .env.example                # 环境配置模板
+├── run_task.py                  # 一键执行脚本
+├── docker-compose.yml           # Docker 编排
+├── Dockerfile                   # 生产镜像
+├── Dockerfile.sandbox           # 沙箱环境
+├── Dockerfile.dev               # 开发环境
+├── pyproject.toml               # 项目配置
+├── pytest.ini                   # 测试配置
+├── requirements.txt             # Python 依赖
+├── .env.example                 # 环境配置模板
 ├── .gitignore
-├── README.md
-├── ARCHITECTURE.md             # 架构文档
-├── DESIGN.md                   # 设计文档
-├── IMPLEMENTATION.md           # 实现文档
-└── PROJECT_STRUCTURE.md        # 项目结构说明（本文件）
+├── LICENSE
+└── README.md
 '''
 
 CORE_COMPONENTS = '''
