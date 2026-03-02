@@ -21,6 +21,22 @@ logger = logging.getLogger(__name__)
 from .base import AgentInterface
 
 
+def _extract_first_json(text: str) -> Dict[str, Any]:
+    if not text:
+        raise ValueError("LLM 返回为空")
+    decoder = json.JSONDecoder()
+    idx = text.find('{')
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        idx = text.find('{', idx + 1)
+    raise ValueError(f"LLM 返回无法解析为 JSON: {text[:200]}")
+
+
 class ExploreAgent(AgentInterface):
     """探索智能体 — LLM 主导的有目的站点导航"""
 
@@ -124,11 +140,7 @@ class ExploreAgent(AgentInterface):
         ])
 
         text = response.get('content', '') if isinstance(response, dict) else str(response)
-        json_match = re.search(r'\{[\s\S]*\}', text)
-        if not json_match:
-            raise ValueError("LLM 返回无法解析")
-
-        result = json.loads(json_match.group())
+        result = _extract_first_json(text)
 
         # 确保 ranked_links 中的链接都来自原始列表
         ranked = [l for l in result.get('ranked_links', []) if l in links]

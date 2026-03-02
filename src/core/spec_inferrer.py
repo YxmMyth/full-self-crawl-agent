@@ -65,6 +65,22 @@ URL: {url}
 """
 
 
+def _extract_first_json(text: str) -> Dict[str, Any]:
+    if not text:
+        raise ValueError("LLM 返回为空")
+    decoder = json.JSONDecoder()
+    idx = text.find('{')
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        idx = text.find('{', idx + 1)
+    raise ValueError(f"LLM 返回无法解析为 JSON: {text[:200]}")
+
+
 class SpecInferrer:
     """
     从用户需求和页面特征推断 Spec。LLM 可用时使用 LLM 理解需求，否则回退到规则推断。
@@ -144,12 +160,7 @@ class SpecInferrer:
         ])
 
         text = response.get('content', '') if isinstance(response, dict) else str(response)
-        # 提取 JSON（可能被 markdown 包裹）
-        json_match = re.search(r'\{[\s\S]*\}', text)
-        if not json_match:
-            raise ValueError(f"LLM 返回无法解析为 JSON: {text[:200]}")
-
-        result = json.loads(json_match.group())
+        result = _extract_first_json(text)
 
         patch: Dict[str, Any] = {}
         if result.get('data_description'):
