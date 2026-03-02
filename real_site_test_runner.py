@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """
 real_site_test_runner.py — 真实站点测试脚本
-从 specs/test_sites/*.yaml 加载规格，执行爬取，记录详细日志和结果
+
+从 test_assets/table.csv 读取测试用例（URL + 自然语言需求），
+仅向 Agent 提供 start_url 和 description，测试完全自主推断能力。
+
+用法:
+    python real_site_test_runner.py 5          # 运行第5个测试（arXiv）
+    python real_site_test_runner.py 5 7 8      # 运行第5、7、8个
+    python real_site_test_runner.py all         # 运行全部10个
 """
 
 import asyncio
+import csv
 import json
 import logging
 import os
@@ -14,8 +22,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-import yaml
-
 # 确保项目根目录在 sys.path
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
@@ -23,10 +29,24 @@ sys.path.insert(0, str(ROOT))
 from src.orchestrator import SelfCrawlingAgent
 from src.core.logging import setup_logging
 
+CSV_PATH = ROOT / 'test_assets' / 'table.csv'
 
-def load_yaml_spec(path: str) -> dict:
-    with open(path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
+
+def load_test_cases() -> list[dict]:
+    """从 CSV 加载测试用例，返回 [{id, description, url, notes}]"""
+    cases = []
+    with open(CSV_PATH, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader)  # 跳过表头
+        for row in reader:
+            if len(row) >= 3:
+                cases.append({
+                    'id': int(row[0].strip()),
+                    'description': row[1].strip(),
+                    'url': row[2].strip(),
+                    'notes': row[3].strip() if len(row) > 3 else '',
+                })
+    return cases
 
 
 def setup_file_logger(task_id: str, reports_dir: Path) -> logging.FileHandler:
@@ -41,20 +61,25 @@ def setup_file_logger(task_id: str, reports_dir: Path) -> logging.FileHandler:
     return handler
 
 
-async def run_one_site(spec_path: str, reports_dir: Path) -> dict:
-    """执行单个站点测试，返回详细结果"""
-    spec = load_yaml_spec(spec_path)
-    task_id = spec.get('task_id', Path(spec_path).stem)
-    start_url = spec.get('start_url', '')
+async def run_one_test(case: dict, reports_dir: Path) -> dict:
+    """执行单个测试：仅传入 URL + 自然语言描述"""
+    task_id = f"test_{case['id']:02d}"
+    start_url = case['url']
+    description = case['description']
 
-    # 设置日志
     handler = setup_file_logger(task_id, reports_dir)
+
+    # 最小化 spec：只有 URL 和自然语言描述，其余全部由 Agent 推断
+    spec = {
+        'start_url': start_url,
+        'description': description,
+    }
 
     record = {
         'task_id': task_id,
-        'spec_file': str(spec_path),
+        'case_id': case['id'],
+        'description': description,
         'start_url': start_url,
-        'extraction_type': spec.get('extraction_type', 'unknown'),
         'start_time': datetime.now().isoformat(),
         'end_time': None,
         'duration_seconds': 0,
@@ -66,15 +91,13 @@ async def run_one_site(spec_path: str, reports_dir: Path) -> dict:
         'crawl_mode': None,
         'extracted_sample': [],
         'warnings': [],
-        'completion_criteria': spec.get('completion_criteria', {}),
-        'criteria_met': {},
     }
 
     t0 = time.time()
     print(f"\n{'='*60}")
-    print(f"🚀 开始测试: {task_id}")
+    print(f"🚀 测试 #{case['id']}: {description}")
     print(f"   URL: {start_url}")
-    print(f"   类型: {spec.get('extraction_type')}")
+    print(f"   输入: 仅 URL + 自然语言描述（全自主推断）")
     print(f"{'='*60}")
 
     try:
@@ -88,19 +111,7 @@ async def run_one_site(spec_path: str, reports_dir: Path) -> dict:
 
         extracted = result.get('extracted_data', [])
         record['total_records'] = len(extracted)
-        # 保存前 3 条记录作为样本
         record['extracted_sample'] = extracted[:3] if extracted else []
-
-        # 评估是否满足完成标准
-        criteria = spec.get('completion_criteria', {})
-        min_items = criteria.get('min_items', 0)
-        quality_thresh = criteria.get('quality_threshold', 0)
-        max_err = criteria.get('max_error_rate', 1.0)
-
-        record['criteria_met'] = {
-            'min_items': len(extracted) >= min_items if min_items else True,
-            'quality_threshold': record['quality_score'] >= quality_thresh if quality_thresh else True,
-        }
 
     except Exception as e:
         record['error'] = f"{type(e).__name__}: {str(e)}"
@@ -110,8 +121,6 @@ async def run_one_site(spec_path: str, reports_dir: Path) -> dict:
     finally:
         record['end_time'] = datetime.now().isoformat()
         record['duration_seconds'] = round(time.time() - t0, 2)
-
-        # 移除文件 handler
         logging.getLogger().removeHandler(handler)
         handler.close()
 
@@ -122,8 +131,6 @@ async def run_one_site(spec_path: str, reports_dir: Path) -> dict:
     print(f"   页面数: {record['pages_visited']} | 模式: {record['crawl_mode']}")
     if record['error']:
         print(f"   错误: {record['error']}")
-    criteria_ok = all(record['criteria_met'].values()) if record['criteria_met'] else False
-    print(f"   完成标准: {'✅ 全部满足' if criteria_ok else '⚠️ 未满足'} {record['criteria_met']}")
 
     # 保存结果 JSON
     result_path = reports_dir / f"{task_id}_result.json"
@@ -134,10 +141,34 @@ async def run_one_site(spec_path: str, reports_dir: Path) -> dict:
 
 
 async def main():
-    # 解析参数
-    sites = sys.argv[1:] if len(sys.argv) > 1 else []
-    if not sites:
-        print("用法: python real_site_test_runner.py site_05_arxiv site_07_allrecipes ...")
+    args = sys.argv[1:] if len(sys.argv) > 1 else []
+    if not args:
+        print("用法:")
+        print("  python real_site_test_runner.py 5          # 运行第5个测试")
+        print("  python real_site_test_runner.py 5 7 8      # 运行多个")
+        print("  python real_site_test_runner.py all         # 运行全部")
+        sys.exit(1)
+
+    cases = load_test_cases()
+    if not cases:
+        print(f"❌ 无法从 {CSV_PATH} 加载测试用例")
+        sys.exit(1)
+
+    # 解析要运行的测试编号
+    if 'all' in args:
+        selected = cases
+    else:
+        ids = set()
+        for a in args:
+            try:
+                ids.add(int(a))
+            except ValueError:
+                print(f"⚠️ 忽略无效参数: {a}")
+        selected = [c for c in cases if c['id'] in ids]
+
+    if not selected:
+        print("❌ 没有匹配的测试用例")
+        print(f"   可用编号: {[c['id'] for c in cases]}")
         sys.exit(1)
 
     # 配置日志
@@ -147,22 +178,11 @@ async def main():
     reports_dir = Path('reports') / f"real_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     reports_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 报告目录: {reports_dir}")
+    print(f"📋 将运行 {len(selected)} 个测试")
 
-    specs_dir = Path('specs/test_sites')
     all_results = []
-
-    for site_name in sites:
-        # 支持 site_05_arxiv 或完整路径
-        if not site_name.endswith('.yaml'):
-            spec_path = specs_dir / f"{site_name}.yaml"
-        else:
-            spec_path = Path(site_name)
-
-        if not spec_path.exists():
-            print(f"⚠️ 跳过不存在的 spec: {spec_path}")
-            continue
-
-        result = await run_one_site(str(spec_path), reports_dir)
+    for case in selected:
+        result = await run_one_test(case, reports_dir)
         all_results.append(result)
 
     # 汇总报告
@@ -172,11 +192,12 @@ async def main():
     total = len(all_results)
     passed = sum(1 for r in all_results if r['success'])
     print(f"总计: {total} | 成功: {passed} | 失败: {total - passed}")
-    print(f"\n{'任务ID':<25} {'状态':<8} {'记录数':<8} {'质量分':<8} {'耗时':<8}")
-    print('-' * 60)
+    print(f"\n{'#':<4} {'描述':<30} {'状态':<4} {'记录':<6} {'质量':<6} {'耗时':<8}")
+    print('-' * 62)
     for r in all_results:
         status = "✅" if r['success'] else "❌"
-        print(f"{r['task_id']:<25} {status:<8} {r['total_records']:<8} {r['quality_score']:<8.2f} {r['duration_seconds']:<8.1f}s")
+        desc = r['description'][:28]
+        print(f"{r['case_id']:<4} {desc:<30} {status:<4} {r['total_records']:<6} {r['quality_score']:<6.2f} {r['duration_seconds']:<8.1f}s")
 
     # 保存汇总
     summary_path = reports_dir / "summary.json"
