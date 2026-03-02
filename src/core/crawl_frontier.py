@@ -170,6 +170,7 @@ class CrawlFrontier:
         max_pages: int = 100,
         url_patterns: Optional[List[str]] = None,
         same_domain_only: bool = True,
+        task_description: str = '',
     ):
         """
         Args:
@@ -178,6 +179,7 @@ class CrawlFrontier:
             max_pages: 最大爬取页面数量
             url_patterns: URL 路径白名单正则列表（可选）；非空时 URL 须匹配至少一个
             same_domain_only: 是否只爬取同一域名的 URL（默认 True）
+            task_description: 任务描述，用于 URL 相关性评分
         """
         self._heap: List[CrawlItem] = []
         self._visited: Set[str] = set()
@@ -199,9 +201,67 @@ class CrawlFrontier:
             self._base_domain = ''
             self._base_scheme = 'https'
 
+        # URL 相关性评分关键词（从任务描述中提取）
+        self._relevance_keywords = self._extract_keywords(task_description)
+
         # 统计
         self._total_pushed: int = 0
         self._total_filtered: int = 0
+
+    @staticmethod
+    def _extract_keywords(description: str) -> Set[str]:
+        """从任务描述中提取关键词用于 URL 相关性评分"""
+        if not description:
+            return set()
+        # 分词：按空白和标点拆分，取长度 >= 3 的词
+        words = re.split(r'[\s,;，；、。！？：（）\[\]()]+', description.lower())
+        # 过滤停用词和太短的词
+        stop_words = {'the', 'and', 'for', 'from', 'with', 'that', 'this', 'all',
+                      'are', 'was', 'were', 'has', 'have', 'had', 'not', 'but',
+                      'can', 'will', 'about', '爬取', '提取', '获取', '抓取',
+                      '数据', '信息', '所有', '包括', '需要', '以及'}
+        return {w for w in words if len(w) >= 3 and w not in stop_words}
+
+    def score_url_relevance(self, url: str) -> int:
+        """
+        根据任务描述评估 URL 相关性，返回优先级调整值。
+        负值 = 提升优先级（更相关），正值 = 降低优先级。
+
+        评分逻辑：
+        - URL 路径包含任务关键词：每个 -10
+        - URL 是列表/分类/搜索页面（含结构化数据）：-20
+        - URL 是新闻/文章/博客页面（通常无结构化数据）：+30
+        """
+        if not self._relevance_keywords:
+            return 0
+
+        parsed = urlparse(url)
+        path_lower = parsed.path.lower()
+        url_lower = url.lower()
+        score = 0
+
+        # 关键词匹配（URL 路径中包含任务关键词）
+        for kw in self._relevance_keywords:
+            if kw in path_lower:
+                score -= 10
+
+        # 结构化数据页面特征
+        list_patterns = ['/list', '/catalog', '/search', '/category', '/products',
+                         '/items', '/results', '/table', '/markets', '/quotes',
+                         '/index', '/directory', '/archive']
+        if any(p in path_lower for p in list_patterns):
+            score -= 20
+
+        # 新闻/文章页面特征（长 slug、日期模式、新闻路径）
+        article_patterns = ['/news/', '/article/', '/blog/', '/post/', '/story/']
+        if any(p in path_lower for p in article_patterns):
+            score += 30
+        # 长 slug 通常是文章（如 /news/nvidia-stock-hits-this-bizarre-level-142107244.html）
+        segments = [s for s in path_lower.split('/') if s]
+        if segments and len(segments[-1]) > 60:
+            score += 20
+
+        return score
 
     # ------------------------------------------------------------------
     # 入队
@@ -262,7 +322,9 @@ class CrawlFrontier:
                 self._total_filtered += 1
                 return False
 
-        item = CrawlItem(url=url, depth=depth, priority=priority, metadata=metadata)
+        item = CrawlItem(url=url, depth=depth,
+                         priority=priority + self.score_url_relevance(url),
+                         metadata=metadata)
         heapq.heappush(self._heap, item)
         self._queued.add(url)
         self._total_pushed += 1

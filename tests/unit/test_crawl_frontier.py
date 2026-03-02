@@ -323,3 +323,43 @@ def test_state_manager_add_url_result():
     state = sm.get_state_reference()
     assert 'https://example.com/page' in state['per_url_results']
     assert state['per_url_results']['https://example.com/page']['records_count'] == 5
+
+
+# ---------------------------------------------------------------------------
+# URL 相关性评分
+# ---------------------------------------------------------------------------
+
+class TestUrlRelevanceScoring:
+    def test_keyword_match_boosts_priority(self):
+        f = CrawlFrontier(base_url='https://finance.yahoo.com',
+                          task_description='stock market prices and quotes')
+        # /markets/ contains 'market' keyword
+        score = f.score_url_relevance('https://finance.yahoo.com/markets/')
+        assert score < 0  # negative = higher priority
+
+    def test_article_pages_penalized(self):
+        f = CrawlFrontier(base_url='https://finance.yahoo.com',
+                          task_description='stock prices')
+        score = f.score_url_relevance(
+            'https://finance.yahoo.com/news/nvidia-stock-hits-this-bizarre-level-142107244.html')
+        assert score > 0  # positive = lower priority
+
+    def test_list_pages_boosted(self):
+        f = CrawlFrontier(base_url='https://example.com',
+                          task_description='product catalog')
+        score = f.score_url_relevance('https://example.com/products/all')
+        assert score < 0
+
+    def test_no_description_neutral(self):
+        f = CrawlFrontier(base_url='https://example.com')
+        score = f.score_url_relevance('https://example.com/anything')
+        assert score == 0
+
+    def test_relevance_affects_pop_order(self):
+        f = CrawlFrontier(base_url='https://finance.yahoo.com',
+                          task_description='stock market quotes')
+        f.push('https://finance.yahoo.com/news/long-article-title-that-is-definitely-longer-than-sixty-chars-abcdef-142107244.html', depth=1, priority=50)
+        f.push('https://finance.yahoo.com/markets/', depth=1, priority=50)
+        # markets should come first (lower effective priority)
+        first = f.pop()
+        assert 'markets' in first.url

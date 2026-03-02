@@ -225,6 +225,40 @@ class ActAgent(AgentInterface):
         name_lower = field_name.lower()
         return any(hint in name_lower for hint in self._HTML_FIELD_HINTS)
 
+    @staticmethod
+    def _sanitize_selector(selector: str) -> tuple:
+        """
+        预处理 LLM 生成的 CSS 选择器，修复常见错误。
+
+        LLM 常生成 `a.class@href` 或 `img.photo@src` 格式（CSS selector + attribute），
+        但 `@` 不是合法的 CSS selector 字符。
+
+        Returns:
+            (clean_selector, target_attr) — 清理后的选择器和要提取的属性名（或 None）
+        """
+        if not selector or not isinstance(selector, str):
+            return (selector or '', None)
+
+        selector = selector.strip()
+        target_attr = None
+
+        # 模式 1: sel@attr — 如 "a.card@href", "img@src", "span.price@data-value"
+        if '@' in selector:
+            parts = selector.rsplit('@', 1)
+            selector = parts[0].strip()
+            target_attr = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+
+        # 模式 2: sel::attr(name) — 如 "a::attr(href)" (Scrapy 风格，BS4 不支持)
+        attr_match = re.match(r'^(.+?)::attr\(([^)]+)\)$', selector)
+        if attr_match:
+            selector = attr_match.group(1).strip()
+            target_attr = attr_match.group(2).strip()
+
+        # 移除 selector 中残留的非法字符
+        selector = re.sub(r'[{}]', '', selector)
+
+        return (selector, target_attr)
+
     async def _extract_simple(self, browser, selectors: Dict[str, str],
                              strategy: Dict[str, Any]) -> List[Dict[str, Any]]:
         """简单提取（单页）"""
@@ -234,13 +268,15 @@ class ActAgent(AgentInterface):
         soup = BeautifulSoup(html, 'html.parser')
 
         # 获取项目容器 — 优先用 container_selector 精确定位
-        container_selector = strategy.get('container_selector') or strategy.get('item_selector', 'div')
+        raw_container = strategy.get('container_selector') or strategy.get('item_selector', 'div')
+        container_selector, _ = self._sanitize_selector(raw_container)
         items = soup.select(container_selector) if container_selector else [soup]
         # 如果容器太宽泛（只匹配到 1 个且是 body/main/html），尝试用首个 target selector 的父级
         if len(items) == 1 and items[0].name in ('html', 'body', 'main', 'div') and selectors:
-            first_sel = next(iter(selectors.values()), None)
-            if first_sel:
-                sub_items = soup.select(first_sel)
+            raw_first = next(iter(selectors.values()), None)
+            if raw_first:
+                first_sel, _ = self._sanitize_selector(raw_first)
+                sub_items = soup.select(first_sel) if first_sel else []
                 if len(sub_items) > 1:
                     items = [el.parent for el in sub_items if el.parent]
                     # 去重保持顺序
@@ -258,12 +294,20 @@ class ActAgent(AgentInterface):
             data = {}
             for field_name, selector in selectors.items():
                 try:
-                    element = item.select_one(selector)
+                    clean_sel, target_attr = self._sanitize_selector(selector)
+                    if not clean_sel:
+                        data[field_name] = ''
+                        continue
+
+                    element = item.select_one(clean_sel)
                     # 回退：容器内找不到时在全局搜索
                     if not element:
-                        element = soup.select_one(selector)
+                        element = soup.select_one(clean_sel)
                     if element:
-                        if element.has_attr('href') or element.has_attr('src'):
+                        if target_attr:
+                            # LLM 明确指定了要提取的属性
+                            value = element.get(target_attr, '') or element.get_text().strip()
+                        elif element.has_attr('href') or element.has_attr('src'):
                             value = element.get('href') or element.get('src') or element.get_text().strip()
                         elif self._should_extract_html(field_name):
                             # 结构/代码类字段提取 HTML 源码

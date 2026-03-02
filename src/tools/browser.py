@@ -178,6 +178,16 @@ class BrowserTool:
         """兼容旧接口：close -> stop"""
         await self.stop()
 
+    async def create_tab(self) -> 'BrowserTab':
+        """
+        创建新标签页，用于并发爬取。
+        返回的 BrowserTab 拥有独立 page，但共享 browser/context。
+        """
+        if not self.context:
+            await self.start()
+        new_page = await self.context.new_page()
+        return BrowserTab(new_page, self)
+
     @with_retry(max_retries=3, base_delay=1.0, max_delay=15.0)
     async def navigate(self, url: str, wait_until: str = 'networkidle',
                       timeout: int = 30000) -> None:
@@ -506,6 +516,112 @@ class BrowserTool:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
+
+
+class BrowserTab:
+    """
+    轻量级浏览器标签页代理，用于并发爬取。
+
+    共享父 BrowserTool 的 browser/context，但拥有独立 page。
+    接口与 BrowserTool 兼容（get_html, navigate, smart_scroll 等）。
+    """
+
+    def __init__(self, page: Page, parent: BrowserTool):
+        self.page = page
+        self._parent = parent
+        self.headless = parent.headless
+        self.browser = parent.browser
+        self.context = parent.context
+        self.playwright = parent.playwright
+
+    async def navigate(self, url: str, wait_until: str = 'networkidle',
+                       timeout: int = 30000) -> None:
+        await self._navigate_with_fallback(url, wait_until=wait_until, timeout=timeout)
+
+    async def _navigate_with_fallback(self, url: str, wait_until: str = 'networkidle',
+                                       timeout: int = 30000) -> None:
+        try:
+            await self.page.goto(url, wait_until=wait_until, timeout=timeout)
+        except Exception as e:
+            if wait_until == 'networkidle' and 'Timeout' in str(e):
+                logger.info(f"networkidle 超时，降级为 load: {url}")
+                await self.page.goto(url, wait_until='load', timeout=timeout)
+            else:
+                raise
+
+    async def goto(self, url: str, wait_until: str = 'networkidle',
+                   timeout: int = 30000) -> None:
+        await self.navigate(url, wait_until=wait_until, timeout=timeout)
+
+    async def get_html(self) -> str:
+        return await self.page.content()
+
+    async def take_screenshot(self, path: Optional[str] = None,
+                              full_page: bool = False) -> bytes:
+        if path:
+            await self.page.screenshot(path=path, full_page=full_page)
+            with open(path, 'rb') as f:
+                return f.read()
+        return await self.page.screenshot(full_page=full_page)
+
+    async def smart_scroll(self, max_scrolls: int = 10, scroll_delay: float = 1.0,
+                           detect_new_content: bool = True) -> Dict[str, Any]:
+        """简化版智能滚动"""
+        if not self.page:
+            return {'scrolls': 0}
+        scrolls = 0
+        for _ in range(max_scrolls):
+            prev_height = await self.page.evaluate('document.body.scrollHeight')
+            await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+            await asyncio.sleep(scroll_delay)
+            new_height = await self.page.evaluate('document.body.scrollHeight')
+            scrolls += 1
+            if detect_new_content and new_height == prev_height:
+                break
+        return {'scrolls': scrolls}
+
+    async def dismiss_popups(self) -> int:
+        """简化版弹窗关闭"""
+        closed = 0
+        selectors = [
+            'button[aria-label*="close" i]', 'button[aria-label*="dismiss" i]',
+            '.modal-close', '.popup-close', '[class*="cookie"] button',
+        ]
+        for sel in selectors:
+            try:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.click()
+                    closed += 1
+            except Exception:
+                pass
+        return closed
+
+    async def wait_for_content(self, min_elements: int = 3, container_selector: str = None,
+                               timeout: int = 10000) -> bool:
+        """等待页面内容加载"""
+        try:
+            if container_selector:
+                await self.page.wait_for_selector(container_selector, timeout=timeout)
+            return True
+        except Exception:
+            return False
+
+    async def close(self) -> None:
+        if self.page:
+            try:
+                await self.page.close()
+            except Exception:
+                pass
+            self.page = None
+
+    async def start(self) -> None:
+        """重建标签页（恢复用）"""
+        if self.context:
+            self.page = await self.context.new_page()
+
+    def get_page(self) -> Page:
+        return self.page
 
 
 class Browser(BrowserTool):

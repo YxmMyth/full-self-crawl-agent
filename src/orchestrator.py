@@ -20,6 +20,8 @@ from .core.context_compressor import ContextCompressor
 from .core.state_manager import StateManager
 from .core.risk_monitor import RiskMonitor
 from .core.meta_controller import MetaController
+from .core.progress_tracker import CrawlProgressTracker
+from .core.checkpoint import CrawlCheckpoint
 from .config.loader import load_config
 from .core.spec_inferrer import SpecInferrer
 
@@ -177,6 +179,15 @@ class SelfCrawlingAgent:
             if inspect.isawaitable(ret):
                 await ret
             return
+
+    async def _restart_browser(self) -> None:
+        """重启浏览器实例（崩溃恢复）"""
+        try:
+            await self.browser.close()
+        except Exception:
+            pass
+        await self.browser.start()
+        logger.info("[Recovery] 浏览器已重启")
 
     async def _run_single_or_multi(self, start_url: str, spec: Any):
         """单页或多页爬取（复用 pipeline.py 中的单页循环）"""
@@ -385,15 +396,19 @@ class SelfCrawlingAgent:
         spec = spec or getattr(self, 'spec', {}) or {}
         max_pages = spec.get('max_pages', 200)
         max_depth = spec.get('max_depth', 5)
+        concurrency = spec.get('concurrency', 1)  # 并发页面数（默认1=串行）
 
         # object.__new__ 场景下兜底初始化
+        task_desc = spec.get('description', '')
         if not hasattr(self, 'frontier') or self.frontier is None:
-            self.frontier = CrawlFrontier(base_url=start_url, max_depth=max_depth, max_pages=max_pages)
+            self.frontier = CrawlFrontier(base_url=start_url, max_depth=max_depth,
+                                          max_pages=max_pages, task_description=task_desc)
         else:
             self.frontier.reset()
             self.frontier.base_url = start_url
             self.frontier.max_depth = max_depth
             self.frontier.max_pages = max_pages
+            self.frontier._relevance_keywords = CrawlFrontier._extract_keywords(task_desc)
         if not hasattr(self, 'meta_controller') or self.meta_controller is None:
             self.meta_controller = MetaController()
         if not hasattr(self, 'risk_monitor') or self.risk_monitor is None:
@@ -402,11 +417,31 @@ class SelfCrawlingAgent:
         # 初始化爬取前沿
         self.frontier.push(start_url, depth=0, priority=100)
 
+        # 进度跟踪器
+        progress = CrawlProgressTracker(total_target=max_pages, progress_interval=5)
+
+        # Checkpoint 管理
+        task_id = spec.get('task_id', 'crawl')
+        checkpoint = CrawlCheckpoint(task_id=task_id)
+        resume_from = spec.get('resume_from_checkpoint', False)
+
         all_results = []
         visited_urls = set()
         explore_agent = ExploreAgent()
         # 跨页面传递 reflect 改进建议
         reflect_hints = {}
+
+        # 从 checkpoint 恢复
+        if resume_from and checkpoint.exists():
+            saved = checkpoint.load()
+            if saved:
+                visited_urls = set(saved.get('visited_urls', []))
+                all_results = saved.get('all_results', [])
+                reflect_hints = saved.get('reflect_hints', {})
+                # 将已访问 URL 标记到 frontier
+                for url in visited_urls:
+                    self.frontier.mark_visited(url)
+                logger.info(f"[Checkpoint] 从断点恢复: 已访问 {len(visited_urls)} 页")
 
         while len(visited_urls) < max_pages and not self.frontier.is_empty():
             # 获取下一个要处理的 URL
@@ -429,6 +464,7 @@ class SelfCrawlingAgent:
             visited_urls.add(canonical)
 
             print(f"处理 URL (深度 {next_depth}): {next_url}")
+            progress.page_started(next_url, depth=next_depth)
 
             try:
                 # 访问页面
@@ -460,11 +496,16 @@ class SelfCrawlingAgent:
                 })
 
                 # 收集结果
+                page_records = page_result.get('extracted_data', [])
+                page_quality = page_result.get('verification_result', {}).get('quality_score', 0)
                 all_results.append({
                     'url': next_url,
                     'result': page_result,
                     'depth': next_depth
                 })
+
+                # 进度跟踪
+                progress.page_completed(next_url, records=len(page_records), quality=page_quality or 0)
 
                 # Meta-Controller: 记录结果 + 自主策略调整
                 self.meta_controller.record_outcome(next_url, page_result)
@@ -507,9 +548,46 @@ class SelfCrawlingAgent:
                     'frontier': self.frontier,
                 })
 
+                # 定期保存 checkpoint
+                if checkpoint.should_save():
+                    checkpoint.save({
+                        'visited_urls': visited_urls,
+                        'all_results': all_results,
+                        'reflect_hints': reflect_hints,
+                        'pages_completed': progress._pages_completed,
+                        'total_records': progress._total_records,
+                    })
+
             except Exception as e:
-                print(f"处理 URL {next_url} 时发生错误: {e}")
+                error_msg = str(e)
+                print(f"处理 URL {next_url} 时发生错误: {error_msg}")
                 self.metrics['total_errors'] += 1
+                progress.page_failed(next_url, error=error_msg)
+
+                # 浏览器崩溃恢复：Page crashed / Target closed / browser closed
+                if any(kw in error_msg for kw in ['Page crashed', 'Target page',
+                                                   'browser has been closed',
+                                                   'Page closed', 'Context closed']):
+                    # 崩溃前紧急保存 checkpoint
+                    checkpoint.save({
+                        'visited_urls': visited_urls,
+                        'all_results': all_results,
+                        'reflect_hints': reflect_hints,
+                        'pages_completed': progress._pages_completed,
+                        'total_records': progress._total_records,
+                    })
+                    logger.warning(f"[Recovery] 检测到浏览器崩溃，尝试重启...")
+                    try:
+                        await self._restart_browser()
+                        logger.info("[Recovery] 浏览器重启成功，继续爬取")
+                    except Exception as restart_err:
+                        logger.error(f"[Recovery] 浏览器重启失败: {restart_err}，终止爬取")
+                        break
+
+        # 打印最终进度摘要
+        progress.print_progress()
+        # 爬取完成后清理 checkpoint
+        checkpoint.cleanup()
 
         extracted_data = []
         quality_scores = []
@@ -550,6 +628,7 @@ class SelfCrawlingAgent:
             'frontier_stats': self.frontier.get_stats(),
             'quality_score': round(avg_quality, 4),
             'meta_controller_stats': self.meta_controller.get_stats(),
+            'progress_stats': progress.get_summary(),
             'summary': self._summarize_results(all_results)
         }
 
