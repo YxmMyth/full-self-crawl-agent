@@ -148,9 +148,44 @@ class PolicyManager:
         ]
 
     def _load_policies_from_config(self, config_path: str):
-        """从配置文件加载策略"""
-        # TODO: 实现从配置文件加载策略
-        pass
+        """从配置文件加载策略（支持 YAML / JSON）"""
+        import json
+        from pathlib import Path
+
+        path = Path(config_path)
+        if not path.exists():
+            return
+
+        try:
+            raw = path.read_text(encoding='utf-8')
+            if path.suffix in ('.yaml', '.yml'):
+                import yaml
+                data = yaml.safe_load(raw)
+            else:
+                data = json.loads(raw)
+
+            if not isinstance(data, dict):
+                return
+
+            for category, rules in data.items():
+                if not isinstance(rules, list):
+                    continue
+                parsed_rules = []
+                for r in rules:
+                    try:
+                        parsed_rules.append(PolicyRule(
+                            name=r['name'],
+                            level=PolicyLevel(r.get('level', 'warning')),
+                            condition=r.get('condition', ''),
+                            action=r.get('action', 'warn'),
+                            description=r.get('description', ''),
+                        ))
+                    except (KeyError, ValueError):
+                        continue
+                if parsed_rules:
+                    self.policies.setdefault(category, []).extend(parsed_rules)
+        except Exception:
+            pass
 
     def check_code(self, code: str) -> Dict[str, Any]:
         """
