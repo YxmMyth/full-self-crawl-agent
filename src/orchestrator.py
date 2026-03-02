@@ -19,6 +19,7 @@ from .core.crawl_frontier import CrawlFrontier, canonicalize_url
 from .core.context_compressor import ContextCompressor
 from .core.state_manager import StateManager
 from .core.risk_monitor import RiskMonitor
+from .core.meta_controller import MetaController
 from .config.loader import load_config
 from .core.spec_inferrer import SpecInferrer
 
@@ -82,6 +83,7 @@ class SelfCrawlingAgent:
         self.frontier = CrawlFrontier()
         self.context_compressor = ContextCompressor(max_tokens=8000)
         self.risk_monitor = RiskMonitor()
+        self.meta_controller = MetaController()
 
         # 用于跟踪性能指标
         self.metrics = {
@@ -242,6 +244,19 @@ class SelfCrawlingAgent:
                 features = page_result.get('page_structure', {}).get('features', {})
                 self._apply_spec_inference(features)
                 spec_inferred = True
+
+            # Meta-Controller: 记录结果 + 自主策略调整
+            self.meta_controller.record_outcome(current_url, page_result)
+            adjustment = self.meta_controller.evaluate()
+            if adjustment:
+                print(f"[MetaController] L{adjustment.level.value} 调整: {adjustment.action} — {adjustment.reason}")
+                overrides = self.meta_controller.get_context_overrides()
+                if 'max_page_retries' in overrides:
+                    initial_context['spec'] = {**initial_context['spec'],
+                                                'max_page_retries': overrides['max_page_retries']}
+                if overrides.get('hint_selectors'):
+                    initial_context.setdefault('reflect_hints', {})['suggested_selectors'] = overrides['hint_selectors']
+            self.meta_controller.reset_escalation()
 
             judge_decision = page_result.get('decision', {}).get('decision', 'complete')
             if judge_decision == 'terminate':
@@ -422,6 +437,10 @@ class SelfCrawlingAgent:
             self.frontier.base_url = start_url
             self.frontier.max_depth = max_depth
             self.frontier.max_pages = max_pages
+        if not hasattr(self, 'meta_controller') or self.meta_controller is None:
+            self.meta_controller = MetaController()
+        if not hasattr(self, 'risk_monitor') or self.risk_monitor is None:
+            self.risk_monitor = RiskMonitor()
 
         # 初始化爬取前沿
         self.frontier.push(start_url, depth=0, priority=100)
@@ -443,6 +462,11 @@ class SelfCrawlingAgent:
             # 规范化 URL 用于去重
             canonical = canonicalize_url(next_url)
             if canonical in visited_urls:
+                continue
+
+            # Meta-Controller: 跳过已知失败 URL 模式
+            if self.meta_controller.should_skip_url(next_url):
+                logger.info(f"[MetaController] 跳过失败模式 URL: {next_url}")
                 continue
 
             visited_urls.add(canonical)
@@ -483,6 +507,19 @@ class SelfCrawlingAgent:
                     'result': page_result,
                     'depth': next_depth
                 })
+
+                # Meta-Controller: 记录结果 + 自主策略调整
+                self.meta_controller.record_outcome(next_url, page_result)
+                adjustment = self.meta_controller.evaluate()
+                if adjustment:
+                    print(f"[MetaController] L{adjustment.level.value} 调整: "
+                          f"{adjustment.action} — {adjustment.reason}")
+                    overrides = self.meta_controller.get_context_overrides()
+                    if overrides.get('hint_selectors'):
+                        reflect_hints['suggested_selectors'] = overrides['hint_selectors']
+                    if overrides.get('force_llm_plan'):
+                        reflect_hints['force_llm_plan'] = True
+                self.meta_controller.reset_escalation()
 
                 # 提取 reflect 改进建议传递给下一页
                 reflection = page_result.get('reflection_notes', {})
@@ -554,6 +591,7 @@ class SelfCrawlingAgent:
             'total_pages_processed': len(visited_urls),
             'frontier_stats': self.frontier.get_stats(),
             'quality_score': round(avg_quality, 4),
+            'meta_controller_stats': self.meta_controller.get_stats(),
             'summary': self._summarize_results(all_results)
         }
 
