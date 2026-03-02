@@ -5,13 +5,27 @@ from .base import (
     AgentCapability,
     DegradationTracker
 )
-# Note: Individual agent classes are not imported at the package level
-# to avoid circular dependencies. Import specific agents individually
-# from their respective modules.
+
+from .sense import SenseAgent
+from .plan import PlanAgent
+from .act import ActAgent
+from .verify import VerifyAgent
+from .judge import JudgeAgent
+from .explore import ExploreAgent
+from .reflect import ReflectAgent
+from .spa_handler import SPAHandler
 
 __all__ = [
     'AgentPool',
     'AgentInterface',
     'AgentCapability',
     'DegradationTracker',
+    'SenseAgent',
+    'PlanAgent',
+    'ActAgent',
+    'VerifyAgent',
+    'JudgeAgent',
+    'ExploreAgent',
+    'ReflectAgent',
+    'SPAHandler',
 ]

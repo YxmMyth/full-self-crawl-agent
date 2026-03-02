@@ -168,48 +168,90 @@ class MultiLLMClient:
         """
         从环境变量创建多提供商客户端
 
-        环境变量格式:
-            DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_API_BASE
-            API_GATEWAY_KEY, API_GATEWAY_MODEL, API_GATEWAY_API_BASE
+        环境变量优先级:
+            API_GATEWAY > OPENAI > ANTHROPIC > OLLAMA > DEEPSEEK
         """
         # 加载API网关配置 - 优先使用
         api_gateway_config = APIGatewayConfig.from_env()
+        openai_config = ProviderConfig.from_env_prefix('OPENAI')
+        if openai_config and not openai_config.model:
+            openai_config.model = 'gpt-4o'
 
-        # 加载 DeepSeek 配置 (推理任务) - 作为备用
+        anthropic_config = ProviderConfig.from_env_prefix('ANTHROPIC')
+        if anthropic_config and not anthropic_config.model:
+            anthropic_config.model = 'claude-sonnet-4-20250514'
+
+        ollama_base = os.getenv('OLLAMA_API_BASE')
+        ollama_model = os.getenv('OLLAMA_MODEL', 'llama3')
+        ollama_api_key = os.getenv('OLLAMA_API_KEY', 'ollama')
+        ollama_config = None
+        if ollama_base or os.getenv('OLLAMA_MODEL'):
+            ollama_config = ProviderConfig(
+                api_key=ollama_api_key,
+                model=ollama_model,
+                api_base=ollama_base or 'http://localhost:11434',
+                provider_name='ollama'
+            )
+
         deepseek_config = ProviderConfig.from_env_prefix('DEEPSEEK')
+        if deepseek_config and not deepseek_config.model:
+            deepseek_config.model = 'deepseek-reasoner'
 
         reasoning_client = None
         coding_client = None
+        default_client = None
         reasoning_client_v2 = None
         coding_client_v2 = None
+        default_client_v2 = None
 
-        # 优先使用API网关配置（如果存在）
         if api_gateway_config:
             logger.info(f"使用API网关配置: {api_gateway_config.model}")
             reasoning_client_v2 = CachedAPIGatewayClient(api_gateway_config)
             coding_client_v2 = CachedAPIGatewayClient(api_gateway_config)
-            logger.info(f"API网关推理和编码客户端已初始化: {api_gateway_config.model}")
-
-        # 创建 DeepSeek 客户端 (推理) - 作为备用
-        if deepseek_config:
-            reasoning_client = CachedLLMClient(
-                api_key=deepseek_config.api_key,
-                model=deepseek_config.model or 'deepseek-reasoner',
-                api_base=deepseek_config.api_base
+            default_client_v2 = coding_client_v2 or reasoning_client_v2
+            return cls(
+                reasoning_client=None,
+                coding_client=None,
+                default_client=None,
+                reasoning_client_v2=reasoning_client_v2,
+                coding_client_v2=coding_client_v2,
+                default_client_v2=default_client_v2
             )
-            logger.info(f"DeepSeek 推理客户端已作为备用初始化: {deepseek_config.model or 'deepseek-reasoner'}")
 
-        # 确保至少有一个客户端可用
-        if not reasoning_client and not coding_client and not reasoning_client_v2 and not coding_client_v2:
-            raise ValueError("至少需要配置一个 LLM 提供商 (API_GATEWAY_KEY 或 DEEPSEEK_API_KEY)")
+        provider_chain = [openai_config, anthropic_config, ollama_config, deepseek_config]
+        primary = next((cfg for cfg in provider_chain if cfg and cfg.api_key), None)
+        fallback = deepseek_config if primary is not deepseek_config else None
+
+        if primary:
+            reasoning_client = CachedLLMClient(
+                api_key=primary.api_key,
+                model=primary.model,
+                api_base=primary.api_base
+            )
+            default_client = reasoning_client
+            logger.info(f"初始化主 LLM 提供商: {primary.provider_name} ({primary.model})")
+
+        if fallback and fallback.api_key:
+            coding_client = CachedLLMClient(
+                api_key=fallback.api_key,
+                model=fallback.model or 'deepseek-reasoner',
+                api_base=fallback.api_base
+            )
+            logger.info("DeepSeek 已作为回退客户端初始化")
+
+        if not reasoning_client and not coding_client:
+            raise ValueError(
+                "至少需要配置一个 LLM 提供商 (API_GATEWAY_KEY / OPENAI_API_KEY / "
+                "ANTHROPIC_API_KEY / OLLAMA_API_BASE / DEEPSEEK_API_KEY)"
+            )
 
         return cls(
             reasoning_client=reasoning_client,
-            coding_client=None,  # GLM已废弃
-            default_client=reasoning_client,  # 使用推理客户端作为默认
-            reasoning_client_v2=reasoning_client_v2,
-            coding_client_v2=coding_client_v2,
-            default_client_v2=coding_client_v2 or reasoning_client_v2
+            coding_client=coding_client,
+            default_client=default_client or reasoning_client or coding_client,
+            reasoning_client_v2=None,
+            coding_client_v2=None,
+            default_client_v2=None
         )
 
     async def reason(

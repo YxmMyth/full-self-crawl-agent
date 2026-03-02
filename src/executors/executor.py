@@ -108,3 +108,38 @@ class Sandbox:
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+
+
+class CrawlExecutor:
+    """
+    兼容执行器：对接旧测试入口 execute(spec, url)。
+    """
+
+    def __init__(self, agent_pool=None, llm_client=None):
+        self.agent_pool = agent_pool
+        self.llm_client = llm_client
+
+    async def execute(self, spec: Dict[str, Any], url: str) -> Dict[str, Any]:
+        from src.orchestrator import SelfCrawlingAgent
+
+        agent = SelfCrawlingAgent()
+        result = await agent.run(url, dict(spec or {}))
+
+        extracted_data: List[Dict[str, Any]] = []
+        if isinstance(result, dict):
+            if isinstance(result.get('extracted_data'), list):
+                extracted_data = result.get('extracted_data', [])
+            elif isinstance(result.get('results'), list):
+                for page in result.get('results', []):
+                    page_result = page.get('result', {}) if isinstance(page, dict) else {}
+                    items = page_result.get('extracted_data', [])
+                    if isinstance(items, list):
+                        extracted_data.extend(items)
+
+        return {
+            'success': bool(result.get('success')) if isinstance(result, dict) else False,
+            'data': extracted_data,
+            'plan_attempts': 1,
+            'error': result.get('error') if isinstance(result, dict) else 'unknown error',
+            'raw_result': result,
+        }

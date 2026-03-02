@@ -1,0 +1,75 @@
+{
+  "version": "v1",
+  "freeze": true,
+  "created_at": "2026-03-02T00:00:00",
+  "updated_at": "2026-03-02T00:00:00",
+  "task_id": "e2e_codepen_html_ppt",
+  "task_name": "CodePen HTML PPT-style output generation",
+  "goal": "Use https://codepen.io to generate an HTML PPT-style output with balanced content structure and visual effects.",
+  "target_url": "https://codepen.io",
+  "start_url": "https://codepen.io",
+  "url": "https://codepen.io",
+  "crawl_mode": "full_site",
+  "max_pages": 12,
+  "max_depth": 3,
+  "max_execution_time": 600,
+  "max_retries": 3,
+  "max_iterations": 12,
+  "url_patterns": [
+    "^https://codepen\\.io(/.*)?$"
+  ],
+  "constraints": [
+    "Use only public pages and assets.",
+    "No login-required flows.",
+    "Prioritize clear section hierarchy and balanced slide-like layout.",
+    "Include visual effects that do not break readability."
+  ],
+  "targets": [
+    {
+      "name": "ppt_html_output",
+      "fields": [
+        {
+          "name": "html_structure",
+          "type": "text",
+          "required": true,
+          "description": "Generated HTML contains title, section blocks, and consistent semantic structure."
+        },
+        {
+          "name": "content_balance",
+          "type": "text",
+          "required": true,
+          "description": "Content is distributed across sections with balanced text density and clear visual rhythm."
+        },
+        {
+          "name": "visual_effects",
+          "type": "text",
+          "required": true,
+          "description": "Uses tasteful animations, gradients, shadows, or transitions while preserving readability."
+        }
+      ]
+    }
+  ],
+  "completion_gate": [
+    "html_snapshot_exists",
+    "sense_analysis_valid",
+    "execution_success",
+    "quality_score >= 0.7"
+  ],
+  "evidence": {
+    "required": [
+      "spec.json",
+      "sense_report.json",
+      "generated_code.py"
+    ],
+    "optional": [
+      "screenshots/",
+      "logs/"
+    ]
+  },
+  "capabilities": [
+    "sense",
+    "plan",
+    "act",
+    "verify"
+  ]
+}

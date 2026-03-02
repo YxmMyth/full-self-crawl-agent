@@ -10,94 +10,30 @@ import re
 import logging
 from datetime import datetime
 
+from .base import _safe_parse_json, DegradationTracker, AgentInterface
+
 logger = logging.getLogger(__name__)
 
 
-class DegradationTracker:
-    """
-    降级追踪器
+class _StructureCompat(dict):
+    """兼容读取 structure['type']，但不暴露为实际字段。"""
 
-    追踪 LLM 调用降级情况，提供警告和统计
-    """
+    def __getitem__(self, key):
+        if key == 'type':
+            page_type = super().get('page_type')
+            return 'other' if page_type == 'static' else page_type
+        return super().__getitem__(key)
 
-    def __init__(self, warning_threshold: int = 3):
-        self.degradation_count = 0
-        self.warning_threshold = warning_threshold
-        self.degradation_history: List[Dict[str, Any]] = []
+    def get(self, key, default=None):
+        if key == 'type':
+            page_type = super().get('page_type', default)
+            return 'other' if page_type == 'static' else page_type
+        return super().get(key, default)
 
-    def record_degradation(self, agent_name: str, operation: str, error: str) -> Dict[str, Any]:
-        """
-        记录降级事件
-
-        Returns:
-            包含 is_degraded 和 should_warn 的字典
-        """
-        self.degradation_count += 1
-        event = {
-            'agent': agent_name,
-            'operation': operation,
-            'error': error,
-            'timestamp': datetime.now().isoformat()
-        }
-        self.degradation_history.append(event)
-
-        return {
-            'is_degraded': True,
-            'should_warn': self.degradation_count >= self.warning_threshold,
-            'degradation_count': self.degradation_count,
-            'message': f"LLM {operation} 降级 (总计: {self.degradation_count}次)"
-        }
-
-    def get_stats(self) -> Dict[str, Any]:
-        """获取降级统计"""
-        return {
-            'total_degradations': self.degradation_count,
-            'warning_threshold': self.warning_threshold,
-            'history': self.degradation_history[-10:]  # 最近10条
-        }
-
-
-def _safe_parse_json(response: str, context: str = "JSON解析") -> Dict:
-    """
-    安全解析 JSON 响应
-    """
-    if not response.strip():
-        return {}
-
-    # 尝试清理 Markdown 代码块
-    if '```' in response:
-        import re
-        matches = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
-        if matches:
-            response = matches[0].strip()
-
-    try:
-        import json
-        return json.loads(response)
-    except json.JSONDecodeError as e:
-        print(f"{context} JSON解析失败: {e}")
-        print(f"原始响应: {response[:500]}...")  # 仅打印前500字符
-        return {}
-
-
-class AgentInterface:
-    """智能体接口"""
-
-    def __init__(self, name: str, capability):
-        self.name = name
-        self.capability = capability
-
-    async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """执行智能体任务"""
-        raise NotImplementedError
-
-    def can_handle(self, context: Dict[str, Any]) -> bool:
-        """判断是否能处理当前上下文"""
-        raise NotImplementedError
-
-    def get_description(self) -> str:
-        """获取智能体描述"""
-        raise NotImplementedError
+    def __contains__(self, key):
+        if key == 'type':
+            return False
+        return super().__contains__(key)
 
 
 class SenseAgent(AgentInterface):
@@ -170,20 +106,22 @@ class SenseAgent(AgentInterface):
             anti_bot_detected = features.get('anti_bot_detected', False)
             anti_bot_info = {'detected': anti_bot_detected}
 
+            structure = _StructureCompat({
+                'page_type': llm_analysis.get('page_type', features['page_type']),
+                'pagination_type': pagination_type,
+                'pagination_next_url': features.get('pagination_info', {}).get('next_url'),
+                'main_content_selector': features['main_content_selector'] or None,
+                'estimated_items': features.get('estimated_items', 0),
+                'complexity': features['complexity'],
+                'has_pagination': features['has_pagination'],
+                'content_selectors': features['content_selectors'],
+            })
+
             result = {
                 'success': True,
                 'html_snapshot': html,
                 'screenshot': screenshot,
-                'structure': {
-                    'page_type': llm_analysis.get('page_type', features['page_type']),
-                    'pagination_type': pagination_type,
-                    'pagination_next_url': features.get('pagination_info', {}).get('next_url'),
-                    'main_content_selector': features['main_content_selector'] or None,
-                    'estimated_items': features.get('estimated_items', 0),
-                    'complexity': features['complexity'],
-                    'has_pagination': features['has_pagination'],
-                    'content_selectors': features['content_selectors'],
-                },
+                'structure': structure,
                 'features': features,
                 'llm_analysis': llm_analysis,
                 'anti_bot_detected': anti_bot_detected,
@@ -386,4 +324,4 @@ HTML样本（前3000字符）：
         return "分析页面结构和特征，为后续提取提供指导"
 
     def can_handle(self, context: Dict[str, Any]) -> bool:
-        return 'browser' in context
+        return 'browser' in context and context.get('browser') is not None

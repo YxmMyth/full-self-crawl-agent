@@ -1,0 +1,16 @@
+{
+  "task_id": "e2e-run-codepen-task",
+  "timestamp": "2026-03-02T11:13:53",
+  "command": "python -m src.main specs\\e2e_codepen_html_ppt.json",
+  "spec_path": "specs\\e2e_codepen_html_ppt.json",
+  "return_code": 0,
+  "outcome": "Execution completed with process exit code 0, but runtime error logged: NoneType page.goto failure.",
+  "key_output": [
+    "开始爬取模式: single_page",
+    "目标 URL: https://codepen.io",
+    "ERROR main: 任务失败: 'NoneType' object has no attribute 'goto'",
+    "Traceback in src\\tools\\browser.py navigate -> self.page.goto"
+  ],
+  "stdout_stderr_log": "reports\\e2e_run_codepen_stdout_stderr.txt",
+  "generated_artifacts": "D:\\full-self-crawl-agent\\reports\\e2e_run_codepen_stdout_stderr.txt"
+}

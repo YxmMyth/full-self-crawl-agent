@@ -4,6 +4,7 @@ import pytest
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 
 def _playwright_browser_available() -> bool:
@@ -67,6 +68,36 @@ class TestTools:
         browser = BrowserTool(headless=True)
         await browser.start()
         await browser.stop()
+
+    @pytest.mark.asyncio
+    async def test_browser_navigate_auto_initializes_page(self, monkeypatch):
+        """navigate 在未初始化 page 时应自动启动浏览器。"""
+        from src.tools.browser import BrowserTool
+
+        browser = BrowserTool(headless=True, check_browsers=False)
+        page = MagicMock()
+        page.goto = AsyncMock()
+
+        async def fake_start():
+            browser.page = page
+
+        monkeypatch.setattr(browser, 'start', fake_start)
+        await browser.navigate('https://example.com')
+        page.goto.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_browser_navigate_raises_if_page_unavailable(self, monkeypatch):
+        """navigate 在无法获得 page 时应抛出明确错误。"""
+        from src.tools.browser import BrowserTool
+
+        browser = BrowserTool(headless=True, check_browsers=False)
+
+        async def fake_start():
+            return None
+
+        monkeypatch.setattr(browser, 'start', fake_start)
+        with pytest.raises(RuntimeError, match='Browser page is not initialized'):
+            await browser.navigate('https://example.com')
 
     async def test_llm_client(self):
         """测试 LLM 客户端"""

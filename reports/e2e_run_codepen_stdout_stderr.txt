@@ -1,0 +1,33 @@
+开始爬取模式: single_page
+目标 URL: https://codepen.io
+2026-03-02 11:13:21 [ERROR] main: 任务失败: 'NoneType' object has no attribute 'goto'
+2026-03-02 11:13:21 [ERROR] main: 详细错误信息:
+Traceback (most recent call last):
+  File "D:\full-self-crawl-agent\src\main.py", line 87, in main
+    result = asyncio.run(agent.run(start_url, spec))
+  File "C:\Users\user\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\user\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\user\AppData\Local\Programs\Python\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\full-self-crawl-agent\src\orchestrator.py", line 96, in run
+    result = await self._run_single_or_multi(start_url, crawl_mode)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\full-self-crawl-agent\src\orchestrator.py", line 147, in _run_single_or_multi
+    return await self._run_single_or_multi_compat(start_url, spec)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\full-self-crawl-agent\src\orchestrator.py", line 265, in _run_single_or_multi_compat
+    await self._navigate_url(start_url)
+  File "D:\full-self-crawl-agent\src\orchestrator.py", line 134, in _navigate_url
+    await ret
+  File "D:\full-self-crawl-agent\src\tools\browser.py", line 94, in wrapper
+    return await func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\full-self-crawl-agent\src\tools\browser.py", line 192, in navigate
+    await self.page.goto(url, wait_until=wait_until, timeout=timeout)
+          ^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'goto'

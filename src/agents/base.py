@@ -194,3 +194,10 @@ from .sense import SenseAgent
 from .plan import PlanAgent
 from .act import ActAgent
 from .explore import ExploreAgent
+from .verify import VerifyAgent
+from .judge import JudgeAgent
+
+
+class ExtractionMetrics(dict):
+    """兼容占位类型：历史代码从 base 导入 ExtractionMetrics。"""
+    pass

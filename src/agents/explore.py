@@ -12,7 +12,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-from .sense import AgentInterface
+from .base import AgentInterface
 
 
 class ExploreAgent(AgentInterface):

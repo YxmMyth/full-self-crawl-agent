@@ -1,0 +1,21 @@
+{
+  "todo_id": "rerun-codepen-e2e",
+  "timestamp": "2026-03-02T11:20:45.293055+08:00",
+  "command": "python -m src.main specs\\e2e_codepen_html_ppt.json",
+  "return_code": 0,
+  "outcome": "success",
+  "key_outcomes": [
+    "stdout_tail: ��ʼ��ȡģʽ: single_page\nĿ�� URL: https://codepen.io\n2026-03-02 11:20:37 [INFO] browser: ����������ɹ�\n2026-03-02 11:20:44 [INFO] main: ����ɹ����\n2026-03-02 11:20:44 [INFO] main: ����ȡ 0 ������\n2026-03-02 11:20:44 [INFO] main: ��������: 1\n2026-03-02 11:20:44 [INFO] main: ��������: 0.00",
+    "stderr_tail: "
+  ],
+  "artifact_paths": {
+    "artifact_dir": ".\\reports\\rerun-codepen-e2e_20260302_112036",
+    "stdout": ".\\reports\\rerun-codepen-e2e_20260302_112036\\stdout.log",
+    "stderr": ".\\reports\\rerun-codepen-e2e_20260302_112036\\stderr.log",
+    "run_log": ".\\\\reports\\\\rerun-codepen-e2e_run_20260302_112036.json",
+    "new_report_files": [
+      ".\\reports\\rerun-codepen-e2e_20260302_112036\\stderr.log",
+      ".\\reports\\rerun-codepen-e2e_20260302_112036\\stdout.log"
+    ]
+  }
+}

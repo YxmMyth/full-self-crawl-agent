@@ -247,10 +247,10 @@ def test_spec_contract_crawl_mode():
     assert spec['url_patterns'] == [r'^/products/']
 
 
-def test_spec_contract_default_single_page():
-    """默认应为 single_page 模式（向后兼容）"""
+def test_spec_contract_default_full_site():
+    """默认应为 full_site 模式"""
     from src.config.contracts import ContractFactory
     spec = ContractFactory.create_spec(goal='test', target_url='https://example.com')
-    assert spec['crawl_mode'] == 'single_page'
-    assert spec['max_pages'] == 1
-    assert spec['max_depth'] == 0
+    assert spec['crawl_mode'] == 'full_site'
+    assert spec['max_pages'] == 200
+    assert spec['max_depth'] == 5

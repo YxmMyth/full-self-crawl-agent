@@ -12,7 +12,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-from .sense import _safe_parse_json, DegradationTracker, AgentInterface
+from .base import _safe_parse_json, DegradationTracker, AgentInterface
 
 
 class ReflectAgent(AgentInterface):

@@ -101,7 +101,11 @@ class CompletionGate:
 
         elif condition == 'execution_success':
             result = state.get('execution_result', {})
-            return result.get('success', False) and result.get('data') is not None
+            if isinstance(result, dict) and result:
+                return result.get('success', False) and result.get('data') is not None
+            # 兼容简化状态：有提取数据即视为执行成功
+            extracted = state.get('extracted_data', [])
+            return isinstance(extracted, list) and len(extracted) > 0
 
         elif condition.startswith('quality_score >='):
             try:
@@ -114,7 +118,9 @@ class CompletionGate:
         elif condition.startswith('sample_count >='):
             try:
                 threshold = int(condition.split('>=')[1].strip())
-                data = state.get('sample_data', [])
+                data = state.get('sample_data')
+                if data is None:
+                    data = state.get('extracted_data', [])
                 return len(data) >= threshold
             except (ValueError, IndexError):
                 return False

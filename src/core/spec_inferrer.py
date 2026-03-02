@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 _DEFAULTS: Dict[str, Dict[str, int]] = {
     'single_page': {'max_pages': 1, 'max_depth': 0},
     'multi_page':  {'max_pages': 20, 'max_depth': 2},
-    'full_site':   {'max_pages': 100, 'max_depth': 3},
+    'full_site':   {'max_pages': 200, 'max_depth': 5},
 }
 
 # 反爬等级对应的保守系数（高反爬时减少爬取量）
@@ -41,6 +41,36 @@ class SpecInferrer:
         patch = inferrer.infer(features, discovered_links, existing_spec)
         spec.update(patch)
     """
+
+    def __init__(self, browser: Optional[Any] = None):
+        self.browser = browser
+
+    async def infer_missing_fields(
+        self,
+        start_url: str,
+        spec: Dict[str, Any],
+        discovered_links: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        兼容旧接口：从当前页面提取特征并补全缺失字段，返回更新后的 spec。
+        """
+        features: Dict[str, Any] = {'url': start_url}
+
+        if self.browser is not None and hasattr(self.browser, 'get_html'):
+            try:
+                from .smart_router import FeatureDetector
+                html = await self.browser.get_html()
+                features = FeatureDetector().analyze(html, start_url)
+                features['url'] = start_url
+                features['html'] = html[:10000]
+            except Exception:
+                # 特征提取失败时，使用默认空特征继续推断
+                features = {'url': start_url}
+
+        updated = dict(spec or {})
+        patch = self.infer(features, discovered_links=discovered_links, existing_spec=updated)
+        updated.update(patch)
+        return updated
 
     def infer(
         self,
@@ -69,12 +99,12 @@ class SpecInferrer:
         if not existing.get('crawl_mode'):
             patch['crawl_mode'] = self._infer_crawl_mode(features, links)
 
-        crawl_mode = existing.get('crawl_mode') or patch.get('crawl_mode', 'single_page')
+        crawl_mode = existing.get('crawl_mode') or patch.get('crawl_mode', 'full_site')
 
         # 2. 推断 max_pages / max_depth
         anti_bot = features.get('anti_bot_level', 'none')
         factor = _ANTI_BOT_FACTOR.get(anti_bot, 1.0)
-        defaults = _DEFAULTS.get(crawl_mode, _DEFAULTS['single_page'])
+        defaults = _DEFAULTS.get(crawl_mode, _DEFAULTS['full_site'])
 
         if not existing.get('max_pages'):
             patch['max_pages'] = max(1, int(defaults['max_pages'] * factor))
@@ -100,6 +130,13 @@ class SpecInferrer:
         if 'has_pagination' not in existing and 'has_pagination' in features:
             patch['has_pagination'] = features['has_pagination']
 
+        # 7. 推断 targets（当 spec 未提供时）
+        existing_targets = existing.get('targets')
+        if not existing_targets:
+            inferred_targets = self._infer_targets(features, features.get('html', ''))
+            if inferred_targets:
+                patch['targets'] = inferred_targets
+
         return patch
 
     # ------------------------------------------------------------------
@@ -119,7 +156,7 @@ class SpecInferrer:
         2. 有分页 → multi_page
         3. 发现大量链接（≥5）且有重复容器 → full_site
         4. 检查 URL 特征（如包含分页参数）→ multi_page
-        5. 默认 → single_page
+        5. 默认 → full_site
         """
         is_spa = features.get('is_spa', False)
         has_pagination = features.get('has_pagination', False)
@@ -150,7 +187,28 @@ class SpecInferrer:
         if links and any(any(indicator in link.lower() for indicator in category_indicators) for link in links):
             return 'full_site'
 
-        return 'single_page'
+        return 'full_site'
+
+    def _infer_targets(self, features: Dict[str, Any], html: str = '') -> List[Dict[str, Any]]:
+        """在缺失 targets 时自动推断基础提取目标。"""
+        page_type = features.get('page_type', 'unknown')
+        is_list_like = page_type in ('list', 'static', 'other') or features.get('has_pagination', False)
+
+        fields: List[Dict[str, Any]] = [
+            {'name': 'title', 'description': '标题文本', 'required': True},
+            {'name': 'link', 'description': '详情链接URL', 'required': True, 'type': 'url'},
+            {'name': 'summary', 'description': '摘要或描述文本', 'required': False},
+            {'name': 'date', 'description': '发布时间', 'required': False},
+        ]
+
+        if 'price' in html.lower() or '￥' in html or '$' in html:
+            fields.append({'name': 'price', 'description': '价格信息', 'required': False})
+
+        target_name = 'items' if is_list_like else 'record'
+        return [{
+            'name': target_name,
+            'fields': fields,
+        }]
 
     def _infer_url_patterns(self, links: List[str]) -> List[str]:
         """

@@ -1,0 +1,80 @@
+{
+  "version": "v1",
+  "freeze": true,
+  "created_at": "2026-02-25T11:00:00",
+  "updated_at": "2026-02-25T11:00:00",
+  "task_id": "news_articles_001",
+  "task_name": "新闻文章列表爬取",
+  "goal": "爬取新闻列表页的文章标题、发布日期和摘要",
+  "target_url": "https://example-news.com/latest",
+  "constraints": [
+    "仅爬取公开内容",
+    "不进行登录操作",
+    "每页最多提取20条"
+  ],
+  "max_execution_time": 600,
+  "max_retries": 5,
+  "max_iterations": 20,
+  "targets": [
+    {
+      "name": "articles",
+      "fields": [
+        {
+          "name": "title",
+          "type": "text",
+          "selector": ".article-title",
+          "required": true,
+          "description": "文章标题"
+        },
+        {
+          "name": "published_date",
+          "type": "date",
+          "selector": ".article-date",
+          "required": true,
+          "description": "发布日期"
+        },
+        {
+          "name": "summary",
+          "type": "text",
+          "selector": ".article-summary",
+          "required": true,
+          "description": "文章摘要"
+        },
+        {
+          "name": "author",
+          "type": "text",
+          "selector": ".article-author",
+          "required": false,
+          "description": "作者"
+        },
+        {
+          "name": "article_url",
+          "type": "url",
+          "selector": ".article-title a",
+          "required": true,
+          "description": "文章详情页链接"
+        }
+      ]
+    }
+  ],
+  "completion_gate": [
+    "html_snapshot_exists",
+    "sense_analysis_valid",
+    "execution_success",
+    "quality_score >= 0.7",
+    "sample_count >= 10"
+  ],
+  "evidence": {
+    "required": ["spec.json", "sense_report.json", "generated_code.py", "extracted_data.json"],
+    "optional": ["screenshots/", "logs/"]
+  },
+  "capabilities": ["sense", "plan", "act", "verify"],
+  "start_url": "https://example-news.com/latest",
+  "max_pages": 10,
+  "depth_limit": 2,
+  "extraction_type": "pagination",
+  "pagination": {
+    "next_page_selector": ".pagination-next",
+    "page_url_pattern": "/page/{}"
+  }
+}

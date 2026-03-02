@@ -316,6 +316,14 @@ class LLMClient:
                        max_tokens: int, temperature: float,
                        top_p: float) -> Optional[Dict[str, Any]]:
         """调用 API"""
+        # 快速失败：无有效 API key 时不发起请求
+        if not self.api_key or not self.api_key.strip():
+            raise LLMException(LLMError(
+                error_type=ErrorType.AUTH,
+                message="API key 未设置，跳过 LLM 调用",
+                is_recoverable=False
+            ))
+
         headers = {
             'Content-Type': 'application/json'
         }

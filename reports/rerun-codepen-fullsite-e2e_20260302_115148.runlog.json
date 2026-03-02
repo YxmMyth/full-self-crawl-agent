@@ -1,0 +1,14 @@
+{
+  "timestamp": "20260302_115148",
+  "command": "python -m src.main specs/e2e_codepen_html_ppt.json",
+  "return_code": 0,
+  "key_outcomes": {
+    "count": 471,
+    "iterations": "N/A",
+    "quality": "0.00"
+  },
+  "artifacts": {
+    "stdout": "reports\\rerun-codepen-fullsite-e2e_20260302_115148.stdout.log",
+    "stderr": "reports\\rerun-codepen-fullsite-e2e_20260302_115148.stderr.log"
+  }
+}

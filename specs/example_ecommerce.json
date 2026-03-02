@@ -1,0 +1,75 @@
+{
+  "version": "v1",
+  "freeze": true,
+  "created_at": "2026-02-25T10:00:00",
+  "updated_at": "2026-02-25T10:00:00",
+  "task_id": "ecommerce_products_001",
+  "task_name": "电商平台产品列表爬取",
+  "goal": "爬取产品列表页面的产品名称、价格和图片链接",
+  "target_url": "https://example.com/products",
+  "constraints": [
+    "遵守 robots.txt",
+    "不进行高频请求",
+    "尊重网站的使用条款"
+  ],
+  "max_execution_time": 300,
+  "max_retries": 3,
+  "max_iterations": 10,
+  "targets": [
+    {
+      "name": "products",
+      "fields": [
+        {
+          "name": "title",
+          "type": "text",
+          "selector": ".product-title",
+          "required": true,
+          "description": "产品标题",
+          "validation_rules": ["not_empty", "max_length_200"]
+        },
+        {
+          "name": "price",
+          "type": "number",
+          "selector": ".product-price",
+          "required": true,
+          "description": "产品价格",
+          "validation_rules": ["positive", "numeric"]
+        },
+        {
+          "name": "image_url",
+          "type": "url",
+          "selector": ".product-image img",
+          "required": false,
+          "description": "产品图片URL"
+        },
+        {
+          "name": "rating",
+          "type": "number",
+          "selector": ".product-rating",
+          "required": false,
+          "description": "产品评分",
+          "validation_rules": ["min_0", "max_5"]
+        }
+      ]
+    }
+  ],
+  "completion_gate": [
+    "html_snapshot_exists",
+    "sense_analysis_valid",
+    "execution_success",
+    "quality_score >= 0.6",
+    "sample_count >= 5"
+  ],
+  "evidence": {
+    "required": ["spec.json", "sense_report.json", "generated_code.py", "extracted_data.json"],
+    "optional": ["screenshots/", "debug_logs/"]
+  },
+  "capabilities": ["sense", "plan", "act", "verify"],
+  "start_url": "https://example.com/products",
+  "max_pages": 5,
+  "depth_limit": 1,
+  "anti_bot": {
+    "respect_robots": true,
+    "delay_ms": 1000
+  }
+}

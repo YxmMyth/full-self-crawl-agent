@@ -9,10 +9,13 @@ import json
 import re
 import logging
 from datetime import datetime
+from urllib.parse import urljoin
+from pathlib import Path
+import zipfile
 
 logger = logging.getLogger(__name__)
 
-from .sense import _safe_parse_json, AgentInterface
+from .base import _safe_parse_json, AgentInterface
 
 
 class ActAgent(AgentInterface):
@@ -48,11 +51,20 @@ class ActAgent(AgentInterface):
             else:  # single_page
                 extracted_data = await self._extract_simple(browser, selectors, strategy)
 
+            zip_fallback = None
+            if self._should_try_zip_fallback(extracted_data, selectors):
+                zip_fallback = await self._extract_from_zip_bundle(browser)
+                if zip_fallback.get('records'):
+                    extracted_data.extend(zip_fallback['records'])
+
             result = {
                 'success': True,
                 'extracted_data': extracted_data,
+                'count': len(extracted_data),
                 'extraction_metrics': self._calculate_extraction_metrics(extracted_data, selectors)
             }
+            if zip_fallback:
+                result['zip_fallback'] = zip_fallback.get('metadata', {})
 
             if errors:
                 result['errors'] = errors
@@ -66,6 +78,120 @@ class ActAgent(AgentInterface):
                 'extracted_data': [],
                 'extraction_metrics': {}
             }
+
+    def _should_try_zip_fallback(self, extracted_data: List[Dict[str, Any]],
+                                 selectors: Dict[str, str]) -> bool:
+        """当正常提取结果较少时，尝试 ZIP 代码包回退提取。"""
+        if not extracted_data:
+            return True
+        if len(extracted_data) > 1:
+            return False
+        field_count = len(selectors or {})
+        non_empty_fields = sum(1 for value in extracted_data[0].values() if value)
+        return field_count > 1 and non_empty_fields <= 1
+
+    async def _extract_from_zip_bundle(self, browser) -> Dict[str, Any]:
+        """检测并下载 ZIP 代码包，从中提取 HTML/CSS/JS。"""
+        metadata: Dict[str, Any] = {
+            'attempted': True,
+            'used': False,
+            'zip_links_found': 0,
+            'errors': []
+        }
+        records: List[Dict[str, Any]] = []
+        try:
+            html = await browser.get_html()
+            referer = await browser.get_current_url()
+            zip_links = self._find_zip_links(html, referer)
+            metadata['zip_links_found'] = len(zip_links)
+            if not zip_links:
+                metadata['errors'].append('no_zip_link_found')
+                return {'records': records, 'metadata': metadata}
+
+            zip_url = zip_links[0]
+            metadata['download_url'] = zip_url
+            from src.tools.downloader import FileDownloader
+            downloader = FileDownloader()
+            download_result = await downloader.download(zip_url, file_type='zip', referer=referer)
+            metadata['download'] = {
+                'success': bool(download_result.get('success')),
+                'error': download_result.get('error')
+            }
+            if not download_result.get('success') or not download_result.get('content'):
+                metadata['errors'].append(
+                    download_result.get('error') or 'zip_download_failed'
+                )
+                return {'records': records, 'metadata': metadata}
+
+            zip_path = Path(download_result['content'])
+            metadata['archive_path'] = str(zip_path)
+            records = self._extract_code_records_from_zip(zip_path, zip_url)
+            metadata['records_extracted'] = len(records)
+            metadata['used'] = len(records) > 0
+            if not records:
+                metadata['errors'].append('no_html_css_js_files_in_zip')
+            return {'records': records, 'metadata': metadata}
+        except Exception as e:
+            metadata['errors'].append(f'zip_fallback_exception: {e}')
+            return {'records': records, 'metadata': metadata}
+
+    def _find_zip_links(self, html: str, base_url: str) -> List[str]:
+        """从 HTML 中发现 ZIP 下载链接。"""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        links: List[str] = []
+        seen = set()
+        for anchor in soup.select('a[href]'):
+            href = (anchor.get('href') or '').strip()
+            if not href:
+                continue
+            href_lower = href.lower()
+            text_lower = anchor.get_text(' ', strip=True).lower()
+            if (
+                '.zip' in href_lower
+                or ('zip' in href_lower and any(k in href_lower for k in ('download', 'export')))
+                or ('zip' in text_lower and any(k in text_lower for k in ('download', 'export', '源码', 'code')))
+            ):
+                absolute = urljoin(base_url, href)
+                if absolute not in seen:
+                    seen.add(absolute)
+                    links.append(absolute)
+        return links
+
+    def _extract_code_records_from_zip(self, zip_path: Path, source_url: str) -> List[Dict[str, Any]]:
+        """从 ZIP 中提取 HTML/CSS/JS 文件内容。"""
+        ext_map = {
+            '.html': 'html',
+            '.htm': 'html',
+            '.css': 'css',
+            '.js': 'javascript',
+            '.mjs': 'javascript',
+            '.jsx': 'javascript',
+            '.ts': 'javascript',
+            '.tsx': 'javascript'
+        }
+        records: List[Dict[str, Any]] = []
+        with zipfile.ZipFile(zip_path, 'r') as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                suffix = Path(info.filename).suffix.lower()
+                asset_type = ext_map.get(suffix)
+                if not asset_type:
+                    continue
+                raw = archive.read(info.filename)
+                try:
+                    content = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    content = raw.decode('utf-8', errors='replace')
+                records.append({
+                    'record_type': 'code_asset',
+                    'asset_type': asset_type,
+                    'file_path': info.filename,
+                    'content': content,
+                    'source': source_url
+                })
+        return records
 
     async def _extract_simple(self, browser, selectors: Dict[str, str],
                              strategy: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -171,16 +297,27 @@ class ActAgent(AgentInterface):
 
         # 统计每个选择器的成功率
         selector_stats = {}
+        failed_selectors = {}
         for field_name in selectors.keys():
             successful_extractions = sum(1 for item in data if item.get(field_name))
+            failed = total_items - successful_extractions if total_items > 0 else 0
             selector_stats[field_name] = {
                 'success_count': successful_extractions,
                 'success_rate': successful_extractions / total_items if total_items > 0 else 0
             }
+            if failed > 0:
+                failed_selectors[field_name] = failed
+
+        overall_success_rate = (
+            sum(stat['success_rate'] for stat in selector_stats.values()) / len(selector_stats)
+            if selector_stats else 0
+        )
 
         return {
             'total_items': total_items,
             'selector_performance': selector_stats,
+            'failed_selectors': failed_selectors,
+            'success_rate': overall_success_rate,
             'average_fields_per_item': sum(len(item) for item in data) / total_items if total_items > 0 else 0
         }
 

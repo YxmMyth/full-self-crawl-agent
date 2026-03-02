@@ -12,7 +12,24 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-from .sense import _safe_parse_json, DegradationTracker, AgentInterface
+from .base import _safe_parse_json, DegradationTracker, AgentInterface
+
+
+def _json_safe(obj: Any, max_str_len: int = 5000) -> Any:
+    """递归清洗数据使其可 json.dumps 序列化，截断过长字符串。"""
+    if isinstance(obj, bytes):
+        return f"<bytes len={len(obj)}>"
+    if isinstance(obj, str):
+        return obj[:max_str_len] if len(obj) > max_str_len else obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v, max_str_len) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v, max_str_len) for v in obj]
+    try:
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        return str(obj)
 
 
 class PlanAgent(AgentInterface):
@@ -36,12 +53,8 @@ class PlanAgent(AgentInterface):
             # 1. 分析目标字段
             targets = spec.get('targets', [])
             if not targets:
-                return {
-                    'success': False,
-                    'error': 'Spec 中未定义目标字段',
-                    'selectors': {},
-                    'strategy': {}
-                }
+                targets = self._infer_targets_from_context(page_structure, spec)
+                spec['targets'] = targets
 
             # 2. 生成选择器策略
             selectors = await self._generate_selectors(
@@ -79,6 +92,18 @@ class PlanAgent(AgentInterface):
                 'degradation': degradation_info
             }
 
+    def _infer_targets_from_context(self, page_structure: Dict[str, Any], spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """当 spec 缺失 targets 时，提供最小可执行目标集合。"""
+        page_type = page_structure.get('page_type') or page_structure.get('type') or spec.get('page_type', 'list')
+        fields = [
+            {'name': 'title', 'description': '标题', 'required': True},
+            {'name': 'link', 'description': '链接URL', 'required': True, 'type': 'url'},
+            {'name': 'summary', 'description': '摘要', 'required': False},
+        ]
+        if page_type in ('detail', 'article'):
+            fields.append({'name': 'content', 'description': '正文内容', 'required': False})
+        return [{'name': 'items', 'fields': fields}]
+
     async def _generate_selectors(self, structure: Dict, targets: List[Dict],
                                  llm_client) -> Dict[str, str]:
         """生成提取选择器"""
@@ -90,10 +115,10 @@ class PlanAgent(AgentInterface):
             prompt = f"""根据页面结构为以下目标生成CSS选择器：
 
 页面结构：
-{json.dumps(structure, ensure_ascii=False)}
+{json.dumps(_json_safe(structure), ensure_ascii=False)}
 
 目标字段：
-{json.dumps(targets, ensure_ascii=False)}
+{json.dumps(_json_safe(targets), ensure_ascii=False)}
 
 请输出 JSON 格式：
 {{

@@ -1,0 +1,88 @@
+{
+  "version": "v1",
+  "freeze": true,
+  "created_at": "2026-03-02T00:00:00",
+  "updated_at": "2026-03-02T12:00:00",
+  "task_id": "e2e_codepen_html_ppt_tighter",
+  "task_name": "CodePen HTML PPT-style output generation (tighter spec)",
+  "goal": "Generate a single self-contained HTML PPT-style page from CodePen inspiration with strict structure, measurable balance, and readability-safe visual effects.",
+  "target_url": "https://codepen.io",
+  "start_url": "https://codepen.io",
+  "url": "https://codepen.io",
+  "crawl_mode": "single_page",
+  "max_pages": 1,
+  "max_depth": 1,
+  "max_execution_time": 600,
+  "max_retries": 3,
+  "max_iterations": 12,
+  "url_patterns": [
+    "^https://codepen\\.io(/.*)?$"
+  ],
+  "constraints": [
+    "Output must be a single standalone HTML document with embedded CSS and optional minimal JS only for transitions.",
+    "Include exactly 6 slide-like sections: cover, agenda, three content sections, and summary.",
+    "Each section must contain one heading and 3-5 bullet points; total words per section 40-90.",
+    "Use semantic HTML tags (main/section/h1-h3/ul/li/footer) and maintain consistent class naming.",
+    "Use a 16:9 slide canvas layout optimized for 1366x768 viewport.",
+    "Visual effects allowed: subtle gradients, shadows, fade/slide transitions under 500ms; no autoplay motion loops.",
+    "Maintain WCAG-like readability: contrast ratio target >= 4.5:1 for body text, avoid low-opacity body text.",
+    "Do not require login, API keys, external assets that can break offline rendering."
+  ],
+  "targets": [
+    {
+      "name": "ppt_html_output",
+      "fields": [
+        {
+          "name": "html_file",
+          "type": "text",
+          "required": true,
+          "description": "Final standalone HTML string/file containing all sections and styles."
+        },
+        {
+          "name": "section_outline",
+          "type": "text",
+          "required": true,
+          "description": "Ordered list of 6 section titles and bullet counts per section."
+        },
+        {
+          "name": "balance_metrics",
+          "type": "text",
+          "required": true,
+          "description": "Per-section word counts and confirmation each section is within 40-90 words."
+        },
+        {
+          "name": "visual_effects",
+          "type": "text",
+          "required": true,
+          "description": "List applied effects with durations and readability safeguards."
+        }
+      ]
+    }
+  ],
+  "completion_gate": [
+    "execution_success",
+    "html_snapshot_exists",
+    "sense_analysis_valid",
+    "contains_exactly_6_sections",
+    "all_sections_word_count_between_40_and_90",
+    "contrast_readability_pass",
+    "quality_score >= 0.8"
+  ],
+  "evidence": {
+    "required": [
+      "spec.json",
+      "sense_report.json",
+      "generated_code.py"
+    ],
+    "optional": [
+      "screenshots/",
+      "logs/"
+    ]
+  },
+  "capabilities": [
+    "sense",
+    "plan",
+    "act",
+    "verify"
+  ]
+}

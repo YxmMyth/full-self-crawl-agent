@@ -10,6 +10,7 @@ import random
 import logging
 import subprocess
 import shutil
+from fnmatch import fnmatch
 
 logger = logging.getLogger('browser')
 
@@ -173,6 +174,10 @@ class BrowserTool:
         if self.playwright:
             await self.playwright.stop()
 
+    async def close(self) -> None:
+        """兼容旧接口：close -> stop"""
+        await self.stop()
+
     @with_retry(max_retries=3, base_delay=1.0, max_delay=15.0)
     async def navigate(self, url: str, wait_until: str = 'networkidle',
                       timeout: int = 30000) -> None:
@@ -184,7 +189,33 @@ class BrowserTool:
             wait_until: 等待条件（load/networkidle/domcontentloaded）
             timeout: 超时时间（毫秒）
         """
-        await self.page.goto(url, wait_until=wait_until, timeout=timeout)
+        if self.page is None:
+            await self.start()
+        if self.page is None:
+            raise RuntimeError(
+                "Browser page is not initialized. Call await browser.start() before navigate(), "
+                "or ensure BrowserTool.start() succeeds."
+            )
+        await self._navigate_with_fallback(url, wait_until=wait_until, timeout=timeout)
+
+    async def _navigate_with_fallback(self, url: str, wait_until: str = 'networkidle',
+                                       timeout: int = 30000) -> None:
+        """导航到 URL，networkidle 超时时自动降级为 load。"""
+        try:
+            await self.page.goto(url, wait_until=wait_until, timeout=timeout)
+        except Exception as e:
+            if wait_until == 'networkidle' and 'Timeout' in str(e):
+                logger.info(f"networkidle 超时，降级为 load: {url}")
+                await self.page.goto(url, wait_until='load', timeout=timeout)
+            else:
+                raise
+
+    async def goto(self, url: str, wait_until: str = 'networkidle',
+                   timeout: int = 30000) -> None:
+        """兼容旧接口：goto -> navigate；首次调用时自动启动浏览器。"""
+        if self.page is None:
+            await self.start()
+        await self.navigate(url, wait_until=wait_until, timeout=timeout)
 
     async def get_html(self) -> str:
         """获取当前页面的 HTML"""
@@ -227,6 +258,148 @@ class BrowserTool:
         """滚动到页面底部"""
         await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
         await asyncio.sleep(delay)
+
+    async def smart_scroll(self, max_scrolls: int = 10, scroll_delay: float = 1.0,
+                           detect_new_content: bool = True) -> Dict[str, Any]:
+        """智能滚动，按需检测新内容是否继续加载。"""
+        if not self.page:
+            await self.start()
+
+        total_scrolls = 0
+        last_height = await self.page.evaluate('document.body.scrollHeight')
+        content_grew = False
+
+        while total_scrolls < max_scrolls:
+            await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+            await asyncio.sleep(scroll_delay)
+            total_scrolls += 1
+
+            new_height = await self.page.evaluate('document.body.scrollHeight')
+            if new_height > last_height:
+                content_grew = True
+                last_height = new_height
+                continue
+            if detect_new_content:
+                break
+
+        return {
+            'scrolls': total_scrolls,
+            'content_grew': content_grew,
+            'final_height': last_height
+        }
+
+    async def dismiss_popups(self) -> int:
+        """尝试关闭常见弹窗/隐私条/遮罩层。"""
+        if not self.page:
+            await self.start()
+
+        selectors = [
+            'button:has-text("Accept")', 'button:has-text("I agree")', 'button:has-text("Got it")',
+            'button:has-text("同意")', 'button:has-text("接受")', 'button:has-text("关闭")',
+            '[id*="cookie"] button', '[class*="cookie"] button',
+            '[aria-label*="close" i]', '[class*="close" i]', '[data-testid*="close" i]',
+            '.modal button', '.popup button', '.overlay button'
+        ]
+
+        closed = 0
+        for selector in selectors:
+            try:
+                elements = await self.page.query_selector_all(selector)
+                for el in elements[:3]:
+                    try:
+                        await el.click(timeout=1000)
+                        closed += 1
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return closed
+
+    async def wait_for_content(self, min_elements: int = 3, container_selector: str = None,
+                               timeout: int = 10000) -> bool:
+        """等待动态内容达到最小元素数量。"""
+        if not self.page:
+            await self.start()
+
+        selector = container_selector or 'article, li, .item, .card, .post, tr'
+        deadline = asyncio.get_event_loop().time() + (timeout / 1000)
+
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                count = await self.page.evaluate(
+                    """(sel) => document.querySelectorAll(sel).length""",
+                    selector
+                )
+                if int(count) >= min_elements:
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+        return False
+
+    async def click_load_more(self, button_texts: List[str] = None, max_clicks: int = 10,
+                              click_delay: float = 1.5) -> int:
+        """自动点击“加载更多”类按钮。"""
+        if not self.page:
+            await self.start()
+
+        button_texts = button_texts or ['Load More', 'Show More', 'More', '加载更多', '更多']
+        clicked = 0
+
+        for _ in range(max_clicks):
+            target = None
+
+            for text in button_texts:
+                try:
+                    locator = self.page.locator(f'button:has-text("{text}")')
+                    if await locator.count() > 0:
+                        target = locator.first
+                        break
+                except Exception:
+                    continue
+
+            if target is None:
+                break
+
+            try:
+                await target.scroll_into_view_if_needed()
+                await target.click(timeout=2000)
+                clicked += 1
+                await asyncio.sleep(click_delay)
+            except Exception:
+                break
+
+        return clicked
+
+    async def capture_api_responses(self, url_pattern: str = '*/api/*', duration: int = 5000) -> List[Dict[str, Any]]:
+        """捕获一段时间内命中 URL 模式的 JSON 响应。"""
+        if not self.page:
+            await self.start()
+
+        captured: List[Dict[str, Any]] = []
+
+        async def _on_response(response):
+            try:
+                url = response.url
+                if not fnmatch(url, url_pattern):
+                    return
+                content_type = response.headers.get('content-type', '')
+                if 'json' not in content_type.lower():
+                    return
+                data = await response.json()
+                captured.append({'url': url, 'data': data})
+            except Exception:
+                return
+
+        self.page.on('response', _on_response)
+        try:
+            await asyncio.sleep(duration / 1000)
+        finally:
+            try:
+                self.page.off('response', _on_response)
+            except Exception:
+                pass
+        return captured
 
     async def scroll_to_element(self, selector: str) -> None:
         """滚动到指定元素"""
@@ -333,3 +506,8 @@ class BrowserTool:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
+
+
+class Browser(BrowserTool):
+    """兼容别名：旧代码使用 Browser。"""
+    pass

@@ -1,4 +1,4 @@
 """Executors module"""
-from .executor import Sandbox
+from .executor import Sandbox, CrawlExecutor
 
-__all__ = ['Sandbox']
+__all__ = ['Sandbox', 'CrawlExecutor']

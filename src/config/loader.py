@@ -13,6 +13,105 @@ from .contracts import SpecContract, StateContract, ContractValidator
 logger = logging.getLogger(__name__)
 
 
+class _SpecCompatDict(dict):
+    """兼容旧代码的 Spec 访问方式（dict + 属性访问）。"""
+
+    def __getattr__(self, key: str):
+        if key == 'name' and 'task_name' in self:
+            return self['task_name']
+        try:
+            return self[key]
+        except KeyError as e:
+            raise AttributeError(key) from e
+
+
+def load_config(config_path: Union[str, Path, None] = None) -> Dict[str, Any]:
+    """
+    加载配置
+
+    Args:
+        config_path: 配置文件路径，默认从当前目录或 ~/.config 查找
+
+    Returns:
+        配置字典
+    """
+    if config_path is None:
+        # 尝试多个默认位置
+        possible_paths = [
+            'config.yaml', 'config.json',
+            '.config/config.yaml', '.config/config.json',
+            'settings.yaml', 'settings.json'
+        ]
+
+        for path in possible_paths:
+            if Path(path).exists():
+                config_path = Path(path)
+                break
+
+        if config_path is None:
+            # 返回默认配置
+            return _get_default_config()
+
+    path = Path(config_path)
+    if not path.exists():
+        logger.warning(f"配置文件不存在: {path}, 使用默认配置")
+        return _get_default_config()
+
+    with open(path, 'r', encoding='utf-8') as f:
+        if path.suffix in ['.yaml', '.yml']:
+            config = yaml.safe_load(f)
+        elif path.suffix == '.json':
+            config = json.load(f)
+        else:
+            logger.warning(f"未知的配置文件格式: {path}, 使用默认配置")
+            return _get_default_config()
+
+    # 合并默认配置
+    default_config = _get_default_config()
+    return {**default_config, **(config or {})}
+
+
+def _get_default_config() -> Dict[str, Any]:
+    """获取默认配置"""
+    return {
+        'llm': {
+            'provider': 'zhipu',
+            'model': 'glm-4',
+            'api_key': '',
+            'api_base': None,
+        },
+        'browser': {
+            'headless': True,
+            'timeout': 30000,
+            'viewport': {'width': 1920, 'height': 1080},
+        },
+        'sandbox': {
+            'strict_mode': True,
+            'timeout': 10,
+            'max_memory_mb': 256,
+        },
+        'retry': {
+            'max_attempts': 3,
+            'delay': 1.0,
+        },
+        'logging': {
+            'level': 'INFO',
+        }
+    }
+
+
+def load_spec(spec_path: Union[str, Path], validate: bool = True) -> Dict[str, Any]:
+    """
+    兼容函数：加载单个 Spec 文件。
+
+    返回值支持 dict 访问和 .name 属性访问。
+    """
+    path = Path(spec_path)
+    loader = SpecLoader(path.parent if path.parent else Path('.'))
+    spec = loader.load_spec(path, validate=validate)
+    return _SpecCompatDict(spec)
+
+
 class SpecLoader:
     """
     Spec 契约加载器
@@ -130,7 +229,7 @@ class SpecLoader:
             raise ValueError("Task name cannot be empty")
 
         # 根据爬取模式选择验证策略
-        crawl_mode = spec_data.get('crawl_mode', 'single_page')
+        crawl_mode = spec_data.get('crawl_mode', 'full_site')
 
         if crawl_mode in ['single_page', 'multi_page']:
             # 对于单页/多页模式，仍需要 targets

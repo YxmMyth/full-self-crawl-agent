@@ -3,8 +3,8 @@ SpecInferrer 单元测试
 
 覆盖：
 - list 页特征 → crawl_mode=full_site
-- detail 页特征 → crawl_mode=single_page
-- form 页特征 → crawl_mode=single_page
+- detail 页特征（无强信号）→ crawl_mode=full_site
+- form 页特征（无强信号）→ crawl_mode=full_site
 - SPA 页特征 → crawl_mode=single_page
 - has_pagination → crawl_mode=multi_page
 - anti_bot_level=high 时 max_pages 应缩小
@@ -88,24 +88,24 @@ def test_list_with_sufficient_links_infers_full_site(inferrer):
     assert patch.get('crawl_mode') == 'full_site'
 
 
-def test_list_with_few_links_infers_single_page(inferrer):
-    """列表页但链接不足 5 条 → single_page"""
+def test_list_with_few_links_infers_full_site(inferrer):
+    """列表页但链接不足 5 条 → 默认 full_site"""
     features = make_list_features()
     links = ['https://example.com/item/1', 'https://example.com/item/2']
     patch = inferrer.infer(features, discovered_links=links)
-    assert patch.get('crawl_mode') == 'single_page'
+    assert patch.get('crawl_mode') == 'full_site'
 
 
-def test_detail_page_infers_single_page(inferrer):
-    """详情页 → single_page"""
+def test_detail_page_infers_full_site(inferrer):
+    """详情页（无其他信号）→ 默认 full_site"""
     patch = inferrer.infer(make_detail_features())
-    assert patch.get('crawl_mode') == 'single_page'
+    assert patch.get('crawl_mode') == 'full_site'
 
 
-def test_form_page_infers_single_page(inferrer):
-    """表单页 → single_page"""
+def test_form_page_infers_full_site(inferrer):
+    """表单页（无其他信号）→ 默认 full_site"""
     patch = inferrer.infer(make_form_features())
-    assert patch.get('crawl_mode') == 'single_page'
+    assert patch.get('crawl_mode') == 'full_site'
 
 
 def test_spa_page_infers_single_page(inferrer):
@@ -145,11 +145,11 @@ def test_existing_max_pages_not_overwritten(inferrer):
 # max_pages / max_depth 推断
 # ---------------------------------------------------------------------------
 
-def test_single_page_defaults(inferrer):
-    """single_page 模式默认 max_pages=1, max_depth=0"""
+def test_default_fallback_uses_full_site_limits(inferrer):
+    """默认回退模式使用 full_site 限额"""
     patch = inferrer.infer(make_detail_features())
-    assert patch.get('max_pages') == 1
-    assert patch.get('max_depth') == 0
+    assert patch.get('max_pages') == 200
+    assert patch.get('max_depth') == 5
 
 
 def test_multi_page_defaults(inferrer):
@@ -160,12 +160,12 @@ def test_multi_page_defaults(inferrer):
 
 
 def test_full_site_defaults(inferrer):
-    """full_site 模式默认 max_pages=100, max_depth=3"""
+    """full_site 模式默认 max_pages=200, max_depth=5"""
     features = make_list_features()
     links = [f'https://example.com/item/{i}' for i in range(10)]
     patch = inferrer.infer(features, discovered_links=links)
-    assert patch.get('max_pages') == 100
-    assert patch.get('max_depth') == 3
+    assert patch.get('max_pages') == 200
+    assert patch.get('max_depth') == 5
 
 
 def test_high_anti_bot_reduces_max_pages(inferrer):
@@ -173,8 +173,8 @@ def test_high_anti_bot_reduces_max_pages(inferrer):
     features = make_list_features(anti_bot='high')
     links = [f'https://example.com/item/{i}' for i in range(10)]
     patch = inferrer.infer(features, discovered_links=links)
-    # full_site 100 * 0.2 = 20
-    assert patch.get('max_pages') == 20
+    # full_site 200 * 0.2 = 40
+    assert patch.get('max_pages') == 40
 
 
 def test_medium_anti_bot_reduces_max_pages(inferrer):
@@ -182,8 +182,8 @@ def test_medium_anti_bot_reduces_max_pages(inferrer):
     features = make_list_features(anti_bot='medium')
     links = [f'https://example.com/item/{i}' for i in range(10)]
     patch = inferrer.infer(features, discovered_links=links)
-    # full_site 100 * 0.5 = 50
-    assert patch.get('max_pages') == 50
+    # full_site 200 * 0.5 = 100
+    assert patch.get('max_pages') == 100
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def test_url_patterns_not_inferred_for_single_page(inferrer):
     """single_page 模式下不推断 url_patterns"""
     features = make_detail_features()
     links = [f'https://example.com/item/{i}' for i in range(10)]
-    patch = inferrer.infer(features, discovered_links=links)
+    patch = inferrer.infer(features, discovered_links=links, existing_spec={'crawl_mode': 'single_page'})
     assert 'url_patterns' not in patch
 
 

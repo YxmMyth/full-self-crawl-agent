@@ -58,7 +58,7 @@ class SpecContract(TypedDict, total=False):
 
     # ===== 爬取模式（Issue #5 新增）=====
     crawl_mode: str
-    # 支持：'single_page'（默认，向后兼容）| 'multi_page' | 'full_site'
+    # 支持：'single_page' | 'multi_page' | 'full_site'（默认）
     max_pages: int   # 最大爬取页面数（multi_page/full_site 模式）
     max_depth: int   # 最大爬取深度（multi_page/full_site 模式）
     url_patterns: List[str]  # URL 路径白名单正则列表（可选）
@@ -248,9 +248,9 @@ class ContractFactory:
         max_execution_time: int = 300,
         max_retries: int = 3,
         max_iterations: int = 10,
-        crawl_mode: str = 'single_page',
-        max_pages: int = 1,
-        max_depth: int = 0,
+        crawl_mode: str = 'full_site',
+        max_pages: int = 200,
+        max_depth: int = 5,
         url_patterns: Optional[List[str]] = None,
     ) -> SpecContract:
         """创建Spec契约"""

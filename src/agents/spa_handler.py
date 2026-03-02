@@ -68,8 +68,12 @@ def _extract_list_from_json(obj: Any, depth: int = 0) -> Optional[List[Dict]]:
 
 
 def _is_json_content_type(content_type: str) -> bool:
-    """判断响应是否为 JSON 类型"""
-    return 'json' in content_type.lower() or 'javascript' in content_type.lower()
+    """判断响应是否为 JSON 类型（排除普通 JS 文件）"""
+    ct = content_type.lower()
+    # application/json 或 text/json 才是真 JSON；排除 application/javascript
+    if 'json' in ct:
+        return True
+    return False
 
 
 def _is_api_url(url: str) -> bool:
@@ -127,6 +131,9 @@ class SPAHandler:
         async def _on_response(response: Any) -> None:
             try:
                 url = response.url
+                # 跳过 JSONP 回调 URL
+                if 'callback=' in url:
+                    return
                 content_type = response.headers.get('content-type', '')
                 if not _is_json_content_type(content_type):
                     return
@@ -142,14 +149,12 @@ class SPAHandler:
                 })
                 if url not in self._candidate_urls:
                     self._candidate_urls.append(url)
-            except json.JSONDecodeError as e:
-                # 记录JSON解析错误，但仍允许其他响应处理
-                print(f"JSON解析错误: {e} - URL: {url if 'url' in locals() else 'unknown'}")
-                logger.warning(f"SPA Handler JSON解析错误 for {url if 'url' in locals() else 'unknown'}: {e}")
+            except json.JSONDecodeError:
+                # JSONP 或非标准 JSON，静默跳过
+                pass
             except Exception as e:
-                # 记录其他错误，但仍允许其他响应处理
-                print(f"响应拦截错误: {e} - URL: {url if 'url' in locals() else 'unknown'}")
-                logger.warning(f"SPA Handler 响应拦截错误 for {url if 'url' in locals() else 'unknown'}: {e}", exc_info=True)
+                # 网络层错误（如 Protocol error），仅 debug 级别记录
+                logger.debug(f"SPA Handler 响应拦截跳过 {url if 'url' in locals() else 'unknown'}: {e}")
 
         page.on('response', _on_response)
 
