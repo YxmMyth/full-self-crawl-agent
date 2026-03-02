@@ -198,7 +198,11 @@ class SelfCrawlingAgent:
             # 运行单页流水线
             page_result = await run_single_page_pipeline(initial_context)
             iterations += 1
-            extracted_data.extend(page_result.get('extracted_data', []))
+            page_records = page_result.get('extracted_data', [])
+            for rec in page_records:
+                if isinstance(rec, dict) and 'source_url' not in rec:
+                    rec['source_url'] = current_url
+            extracted_data.extend(page_records)
 
             all_results.append({
                 'url': current_url,
@@ -489,7 +493,13 @@ class SelfCrawlingAgent:
         quality_scores = []
         for result in all_results:
             page_result = result.get('result', {})
-            extracted_data.extend(page_result.get('extracted_data', []))
+            page_url = result.get('url', '')
+            page_records = page_result.get('extracted_data', [])
+            # 确保每条记录都有来源 URL
+            for rec in page_records:
+                if isinstance(rec, dict) and 'source_url' not in rec:
+                    rec['source_url'] = page_url
+            extracted_data.extend(page_records)
             # 收集每页的质量分数用于聚合
             page_quality = page_result.get('verification_result', {}).get('quality_score')
             if page_quality is None:
@@ -497,8 +507,12 @@ class SelfCrawlingAgent:
             if page_quality is not None and isinstance(page_quality, (int, float)):
                 quality_scores.append(float(page_quality))
 
-        # 记录级去重：按内容哈希去除完全相同的记录
-        extracted_data = self._deduplicate_records(extracted_data)
+        # 记录级去重：按内容哈希去除完全相同的记录，并过滤非目标字段记录
+        target_fields = set()
+        for t in spec.get('targets', []):
+            for f in t.get('fields', []):
+                target_fields.add(f.get('name', ''))
+        extracted_data = self._deduplicate_records(extracted_data, target_fields)
 
         # 按页面加权平均计算整体质量（无分数时回退到 0.0）
         avg_quality = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
@@ -534,17 +548,21 @@ class SelfCrawlingAgent:
         return links
 
     @staticmethod
-    def _deduplicate_records(records: List[Dict]) -> List[Dict]:
-        """去除完全相同的记录和空记录，保持原始顺序。"""
+    def _deduplicate_records(records: List[Dict], target_fields: set = None) -> List[Dict]:
+        """去除完全相同的记录和空/非目标记录，保持原始顺序。"""
         import hashlib
         seen = set()
         unique = []
         for rec in records:
+            # 如果指定了目标字段，跳过不包含任何目标字段的记录
+            if target_fields:
+                has_target = any(k in target_fields for k in rec.keys())
+                if not has_target:
+                    continue
             # 跳过空记录：所有值为空或缺失
             non_empty_vals = [v for v in rec.values() if v and str(v).strip()]
             if not non_empty_vals:
                 continue
-            # 使用所有值的排序元组作为唯一性标识
             try:
                 key = hashlib.md5(
                     json.dumps(rec, sort_keys=True, default=str).encode()

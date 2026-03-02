@@ -139,6 +139,11 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
             return {'success': False, 'error': f"执行阶段失败: {act_result.get('error')}"}
 
         pipeline_context['extracted_data'] = act_result.get('extracted_data', [])
+        # 为每条记录注入来源 URL
+        source_url = context.get('start_url', '')
+        for rec in pipeline_context['extracted_data']:
+            if isinstance(rec, dict) and 'source_url' not in rec:
+                rec['source_url'] = source_url
         pipeline_context['extraction_method'] = extraction_method
         print(f"   提取完成 ({len(act_result.get('extracted_data', []))} 条记录, 方法: {extraction_method})")
 
