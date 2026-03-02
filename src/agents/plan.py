@@ -110,7 +110,6 @@ class PlanAgent(AgentInterface):
         if context is None:
             context = {}
         if not llm_client:
-            # 降级：基于结构特征生成基础选择器
             return self._generate_fallback_selectors(structure, targets)
 
         try:
@@ -126,6 +125,19 @@ class PlanAgent(AgentInterface):
 请参考上述建议优化本页的提取策略。
 """
 
+            # 注入 SmartRouter 路由决策（如有）
+            routing_section = ""
+            routing = context.get('routing_guidance', {})
+            if routing:
+                routing_section = f"""
+SmartRouter 路由分析：
+- 推荐策略: {routing.get('strategy', '未知')}
+- 页面类型: {routing.get('page_type', '未知')}
+- 复杂度: {routing.get('complexity', '未知')}
+- 特殊要求: {', '.join(routing.get('special_requirements', [])) or '无'}
+请根据路由分析调整选择器策略。
+"""
+
             prompt = f"""根据页面结构为以下目标生成CSS选择器：
 
 页面结构：
@@ -133,7 +145,7 @@ class PlanAgent(AgentInterface):
 
 目标字段：
 {json.dumps(_json_safe(targets), ensure_ascii=False)}
-{reflect_section}
+{routing_section}{reflect_section}
 请输出 JSON 格式：
 {{
     "field_name": "CSS选择器",
@@ -196,14 +208,22 @@ class PlanAgent(AgentInterface):
 
     def _determine_extraction_strategy(self, structure: Dict, targets: List[Dict],
                                        context: Dict = None) -> Dict[str, Any]:
-        """确定提取策略"""
+        """确定提取策略（优先使用 SmartRouter 路由决策）"""
         page_type = structure.get('page_type', 'unknown')
         has_pagination = structure.get('has_pagination', False)
         pagination_type = structure.get('pagination_type', 'none')
 
         strategy_type = 'css'
-        # 当 reflect 建议更换策略时，升级为 LLM 驱动提取
         if context:
+            # SmartRouter 路由建议的策略
+            routing = context.get('routing_guidance', {})
+            exec_params = routing.get('execution_params', {})
+            if exec_params.get('strategy_type'):
+                strategy_type = exec_params['strategy_type']
+            if routing.get('page_type'):
+                page_type = routing['page_type']
+
+            # reflect 建议可覆盖
             reflect_hints = context.get('reflect_hints', {})
             if reflect_hints.get('change_strategy') or reflect_hints.get('strategy_type') == 'llm':
                 strategy_type = 'llm'
@@ -217,6 +237,14 @@ class PlanAgent(AgentInterface):
             'item_selector': structure.get('main_content_selector', 'div'),
             'batch_size': 10 if has_pagination else 1
         }
+
+        # SmartRouter 的容器选择器（如有）
+        if context:
+            routing = context.get('routing_guidance', {})
+            exec_params = routing.get('execution_params', {})
+            if exec_params.get('container_selector'):
+                strategy['container_selector'] = exec_params['container_selector']
+                strategy['item_selector'] = exec_params['container_selector']
 
         # 根据爬取模式调整策略
         crawl_mode = targets[0].get('crawl_mode', 'single_page') if targets else 'single_page'
