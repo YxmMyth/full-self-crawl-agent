@@ -10,6 +10,7 @@ from datetime import datetime
 
 from .agents.base import AgentCapability
 from .core.smart_router import SmartRouter
+from .tools.vision_browser import VisionBrowser, PageBlocker
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,27 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"SmartRouter 路由失败（降级为默认流程）: {e}")
             routing_decision = {}
+
+        # 1.8 Vision-LLM 页面阻断检测与自主处理
+        try:
+            vision = VisionBrowser(browser, llm_client=context.get('llm_client'))
+            visual_analysis = await vision.analyze_page(use_vision_llm=bool(context.get('llm_client')))
+            pipeline_context['visual_analysis'] = {
+                'page_type': visual_analysis.page_type,
+                'blocker': visual_analysis.blocker.value,
+                'data_regions': len(visual_analysis.data_regions),
+                'has_meaningful_content': visual_analysis.has_meaningful_content,
+                'analysis_source': visual_analysis.analysis_source,
+            }
+            if visual_analysis.blocker != PageBlocker.NONE:
+                print(f"   ⚠ 检测到页面阻断: {visual_analysis.blocker.value}")
+                handled = await vision.handle_blocker(visual_analysis.blocker)
+                if handled:
+                    print(f"   ✓ 已自主处理: {visual_analysis.blocker.value}")
+                else:
+                    print(f"   ✗ 无法绕过: {visual_analysis.blocker.value}，继续尝试提取")
+        except Exception as e:
+            logger.debug(f"Vision 分析失败（降级为标准流程）: {e}")
 
         # 内循环：Plan → Act → Verify → Judge → Reflect，支持重试
         reflect_hints = context.get('reflect_hints', {})
