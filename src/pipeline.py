@@ -100,6 +100,18 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
                 if handled:
                     print(f"   ✓ 已自主处理: {visual_analysis.blocker.value}")
                 else:
+                    # 不可绕过的阻断类型，立即放弃
+                    unresolvable = {PageBlocker.PAYWALL, PageBlocker.GEO_BLOCK, PageBlocker.ANTI_BOT}
+                    if visual_analysis.blocker in unresolvable:
+                        print(f"   ✗ 不可绕过阻断: {visual_analysis.blocker.value}，放弃此页")
+                        return {
+                            'success': False,
+                            'error': f'blocked_by_{visual_analysis.blocker.value}',
+                            'blocker': visual_analysis.blocker.value,
+                            'page_structure': pipeline_context.get('page_structure', {}),
+                            'extracted_data': [],
+                            'decision': {'decision': 'terminate'},
+                        }
                     print(f"   ✗ 无法绕过: {visual_analysis.blocker.value}，继续尝试提取")
         except Exception as e:
             logger.debug(f"Vision 分析失败（降级为标准流程）: {e}")
