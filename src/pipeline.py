@@ -311,8 +311,12 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
             verify_result = best_result['verification_result']
 
         # 返回完整结果
+        # 判断是否成功：Judge 说 complete 才算成功，retry 耗尽或 terminate 算失败
+        final_decision = pipeline_context['decision'].get('decision', 'complete')
+        pipeline_success = final_decision == 'complete'
+
         return {
-            'success': True,
+            'success': pipeline_success,
             'page_structure': pipeline_context['page_structure'],
             'selectors': pipeline_context['selectors'],
             'strategy': pipeline_context['strategy'],

@@ -179,8 +179,11 @@ class SelfCrawlingAgent:
         """单页或多页爬取（复用 pipeline.py 中的单页循环）"""
         from .pipeline import run_single_page_pipeline
 
+        # 兼容：如果传入字符串 crawl_mode，转成 dict
         if isinstance(spec, str):
-            return await self._run_single_or_multi_compat(start_url, spec)
+            crawl_mode_str = spec
+            spec = dict(getattr(self, 'spec', {}) or {})
+            spec['crawl_mode'] = crawl_mode_str
         else:
             spec = spec or getattr(self, 'spec', {}) or {}
 
@@ -325,8 +328,11 @@ class SelfCrawlingAgent:
         qs = [r.get('result', {}).get('verification_result', {}).get('quality_score', 0.0)
               for r in all_results if r.get('result', {}).get('success')]
         extracted_data = self._deduplicate_records(extracted_data)
+
+        # 检查是否有页面真正成功
+        any_success = any(r.get('result', {}).get('success') for r in all_results)
         return {
-            'success': True,
+            'success': any_success,
             'crawl_mode': crawl_mode,
             'results': all_results,
             'extracted_data': extracted_data,
@@ -334,73 +340,6 @@ class SelfCrawlingAgent:
             'quality_score': round(sum(qs) / len(qs), 4) if qs else 0.0,
             'total_pages_processed': len(all_results),
             'summary': self._summarize_results(all_results)
-        }
-
-    async def _run_single_or_multi_compat(self, start_url: str, crawl_mode: str) -> Dict[str, Any]:
-        """兼容旧测试路径：直接按字符串能力调用 agent_pool。"""
-        spec = dict(getattr(self, 'spec', {}) or {})
-        spec['crawl_mode'] = crawl_mode
-        max_iterations = max(1, int(spec.get('max_iterations', 1)))
-        iterations = 0
-        inferred = False
-        extracted_data: List[Dict[str, Any]] = []
-
-        while iterations < max_iterations:
-            iterations += 1
-            await self._navigate_url(start_url)
-
-            sense = await self.agent_pool.execute_capability('sense', {'browser': self.browser, 'spec': spec})
-            if not inferred:
-                self._apply_spec_inference(sense.get('features', {}) if isinstance(sense, dict) else {})
-                inferred = True
-
-            await self.agent_pool.execute_capability('plan', {'spec': spec, 'page_structure': sense})
-            act = await self.agent_pool.execute_capability('act', {'browser': self.browser, 'spec': spec})
-            page_items = act.get('extracted_data', []) if isinstance(act, dict) else []
-            if isinstance(page_items, list):
-                extracted_data.extend(page_items)
-
-            verify = await self.agent_pool.execute_capability(
-                'verify', {'extracted_data': page_items, 'spec': spec}
-            )
-            judge = await self.agent_pool.execute_capability(
-                'judge',
-                {
-                    'quality_score': (verify or {}).get('quality_score', 0.0),
-                    'errors': (verify or {}).get('verification_result', {}).get('issues', []),
-                    'extracted_data': page_items,
-                    'iteration': iterations,
-                    'max_iterations': max_iterations,
-                    'spec': spec,
-                }
-            )
-            decision = (judge or {}).get('decision', 'complete')
-
-            if decision == 'terminate':
-                return {
-                    'success': False,
-                    'crawl_mode': crawl_mode,
-                    'extracted_data': extracted_data,
-                    'iterations': iterations,
-                    'quality_score': (verify or {}).get('quality_score', 0.0),
-                    'error': 'terminated_by_judge',
-                }
-            if decision == 'complete':
-                return {
-                    'success': True,
-                    'crawl_mode': crawl_mode,
-                    'extracted_data': extracted_data,
-                    'iterations': iterations,
-                    'quality_score': (verify or {}).get('quality_score', 0.0),
-                }
-
-        return {
-            'success': False,
-            'crawl_mode': crawl_mode,
-            'extracted_data': extracted_data,
-            'iterations': max_iterations,
-            'quality_score': 0.0,
-            'error': 'max_iterations_reached',
         }
 
     def _get_next_page_url(self, current_url: str, next_page_num: int, page_result: Dict) -> Optional[str]:

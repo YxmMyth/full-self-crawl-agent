@@ -13,6 +13,7 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
+from src.agents.base import AgentCapability
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +362,13 @@ class TestRunSingleOrMulti:
         agent.evidence_collector.collect_plan = MagicMock()
         agent.risk_monitor = MagicMock()
         agent.risk_monitor.check_metrics = MagicMock(return_value=[])
+        agent.risk_monitor.has_critical_risk = MagicMock(return_value=False)
+        agent.risk_monitor.get_high_risk_alerts = MagicMock(return_value=[])
+        agent.meta_controller = MagicMock()
+        agent.meta_controller.record_outcome = MagicMock()
+        agent.meta_controller.evaluate = MagicMock(return_value=None)
+        agent.meta_controller.get_context_overrides = MagicMock(return_value={})
+        agent.meta_controller.reset_escalation = MagicMock()
         agent.completion_gate = MagicMock()
         agent.completion_gate.check = MagicMock(return_value=False)
         agent.completion_gate.get_failed_gates = MagicMock(return_value=[])
@@ -384,17 +392,19 @@ class TestRunSingleOrMulti:
         verify = verify or _make_verify_result(0.9)
 
         async def execute_capability(cap, ctx):
-            if cap == 'sense':
+            # 兼容 AgentCapability Enum 和字符串
+            cap_str = cap.value if isinstance(cap, AgentCapability) else cap
+            if cap_str == 'sense':
                 return sense
-            elif cap == 'plan':
+            elif cap_str == 'plan':
                 return plan
-            elif cap == 'act':
+            elif cap_str == 'act':
                 return act
-            elif cap == 'verify':
+            elif cap_str == 'verify':
                 return verify
-            elif cap == 'judge':
+            elif cap_str == 'judge':
                 return _make_judge_result(judge_decision)
-            elif cap == 'reflect':
+            elif cap_str == 'reflect':
                 return {'success': True, 'new_selectors': {}}
             return {'success': True}
 
@@ -439,16 +449,16 @@ class TestRunSingleOrMulti:
         assert result['success'] is False
 
     async def test_max_iterations_limit(self):
-        """超过 max_iterations 时返回 success=False 并标注原因"""
+        """pipeline 内部 retry 耗尽且 judge 非 complete 时返回 success=False"""
         spec = _make_spec('single_page')
-        spec['max_iterations'] = 2
+        spec['max_page_retries'] = 2  # 控制 pipeline 内部重试次数
         agent = self._make_agent(spec)
-        # judge 总是 reflect_and_retry，使循环耗尽
+        # judge 总是 reflect_and_retry，使 pipeline 内部循环耗尽
         self._mock_agent_pool(agent, judge_decision='reflect_and_retry')
 
         result = await agent._run_single_or_multi('https://example.com/', 'single_page')
         assert result['success'] is False
-        assert result['iterations'] == 2
+        assert result['iterations'] == 1  # 单页模式只有 1 次 orchestrator iteration
 
     async def test_spec_inference_applied_on_first_iteration(self):
         """首次迭代后应调用 _apply_spec_inference"""
@@ -479,19 +489,20 @@ class TestRunSingleOrMulti:
         idx = [0]
 
         async def execute_capability(cap, ctx):
-            if cap == 'sense':
+            cap_str = cap.value if isinstance(cap, AgentCapability) else cap
+            if cap_str == 'sense':
                 return _make_sense_result()
-            elif cap == 'plan':
+            elif cap_str == 'plan':
                 return _make_plan_result()
-            elif cap == 'act':
+            elif cap_str == 'act':
                 return _make_act_result(1)
-            elif cap == 'verify':
+            elif cap_str == 'verify':
                 return _make_verify_result()
-            elif cap == 'judge':
+            elif cap_str == 'judge':
                 d = decisions[min(idx[0], len(decisions) - 1)]
                 idx[0] += 1
                 return _make_judge_result(d)
-            elif cap == 'reflect':
+            elif cap_str == 'reflect':
                 return {'success': True, 'new_selectors': {}}
             return {'success': True}
 
