@@ -62,6 +62,20 @@ class SelfCrawlingAgent:
             api_base=llm_cfg.get('api_base') or llm_cfg.get('base_url')
         )
         self._llm_available = bool(api_key and api_key.strip())
+
+        # Vision-LLM 客户端（用于多模态页面分析，默认 Gemini）
+        vision_cfg = self.config.get('vision_llm', {})
+        vision_key = vision_cfg.get('api_key', '') or api_key  # 回退使用主 LLM key
+        vision_model = vision_cfg.get('model', 'gemini-2.5-flash')
+        vision_base = vision_cfg.get('api_base') or llm_cfg.get('api_base')
+        self.vision_llm_client = None
+        if vision_key and vision_key.strip():
+            self.vision_llm_client = LLMClient(
+                api_key=vision_key,
+                model=vision_model,
+                api_base=vision_base
+            )
+
         sandbox_cfg = self.config.get('sandbox', {})
         from .core.policy_manager import PolicyManager
         self.policy_manager = PolicyManager()
@@ -179,6 +193,7 @@ class SelfCrawlingAgent:
             'spec': spec,
             'browser': self.browser,
             'llm_client': llm,
+            'vision_llm_client': getattr(self, 'vision_llm_client', None),
             'sandbox': getattr(self, 'sandbox', None),
             'agent_pool': self.agent_pool,
         }
@@ -496,6 +511,7 @@ class SelfCrawlingAgent:
                     'spec': spec,
                     'browser': self.browser,
                     'llm_client': llm,
+                    'vision_llm_client': getattr(self, 'vision_llm_client', None),
                     'sandbox': getattr(self, 'sandbox', None),
                     'agent_pool': self.agent_pool,
                     'reflect_hints': reflect_hints,

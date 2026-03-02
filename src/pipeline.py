@@ -83,8 +83,10 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
 
         # 1.8 Vision-LLM 页面阻断检测与自主处理
         try:
-            vision = VisionBrowser(browser, llm_client=context.get('llm_client'))
-            visual_analysis = await vision.analyze_page(use_vision_llm=bool(context.get('llm_client')))
+            # 优先用 vision_llm_client（Gemini），回退到主 llm_client
+            vision_llm = context.get('vision_llm_client') or context.get('llm_client')
+            vision = VisionBrowser(browser, llm_client=vision_llm)
+            visual_analysis = await vision.analyze_page(use_vision_llm=bool(vision_llm))
             pipeline_context['visual_analysis'] = {
                 'page_type': visual_analysis.page_type,
                 'blocker': visual_analysis.blocker.value,

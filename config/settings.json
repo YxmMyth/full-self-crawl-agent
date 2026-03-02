@@ -17,6 +17,14 @@
     "cache_max_size": 1000
   },
 
+  "vision_llm": {
+    "model": "gemini-2.5-flash",
+    "api_key": "",
+    "api_base": "http://45.78.224.156:3000/v1",
+    "timeout": 30,
+    "max_tokens": 1024
+  },
+
   "browser": {
     "headless": true,
     "timeout": 30000,
