@@ -228,6 +228,18 @@ SmartRouter 路由分析：
             if reflect_hints.get('change_strategy') or reflect_hints.get('strategy_type') == 'llm':
                 strategy_type = 'llm'
 
+            # Docker 模式下 reflect 可推荐 script 策略
+            if reflect_hints.get('strategy_type') == 'script':
+                strategy_type = 'script'
+
+        # Docker 模式自动升级: CSS 失败多次 → script 策略
+        from src.utils.runtime import is_docker
+        if is_docker() and context:
+            retry_count = context.get('retry_count', 0)
+            if retry_count >= 1 and strategy_type == 'css':
+                strategy_type = 'script'
+                logger.info("Docker模式: CSS 提取不佳，升级为 script 策略")
+
         strategy = {
             'strategy_type': strategy_type,
             'page_type': page_type,

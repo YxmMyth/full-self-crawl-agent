@@ -1,9 +1,13 @@
 """
-代码执行器 — 精简版
+代码执行器
 
-只有一个 Sandbox 类，通过 strict_mode 控制行为：
+Sandbox 类通过 strict_mode 控制行为：
 - strict_mode=True  (本地开发): 校验危险代码后再 subprocess 执行
 - strict_mode=False (Docker容器): 只管超时，不限模块
+
+Docker 容器内额外提供:
+- execute_bash(): 直接执行 bash 命令
+- execute_script(): 执行 Python/bash/node 脚本文件
 """
 
 import asyncio
@@ -13,6 +17,7 @@ import os
 import sys
 import re
 import logging
+import shutil
 from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger('executor')
@@ -122,6 +127,143 @@ class Sandbox:
                     'returncode': -1,
                 }
 
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    async def execute_bash(self, command: str, timeout: int = None,
+                           cwd: str = None) -> Dict[str, Any]:
+        """
+        执行 bash 命令（仅 Docker 模式可用）
+
+        Args:
+            command: bash 命令字符串
+            timeout: 超时秒数
+            cwd: 工作目录
+
+        Returns:
+            dict with success, stdout, stderr, returncode
+        """
+        from src.utils.runtime import is_docker
+        if self.strict_mode and not is_docker():
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': 'execute_bash() 仅在 Docker 容器内可用',
+                'returncode': -1,
+            }
+
+        timeout = timeout or self.default_timeout
+        shell_bin = shutil.which('bash') or '/bin/sh'
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                shell_bin, '-c', command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+                return {
+                    'success': proc.returncode == 0,
+                    'stdout': stdout.decode('utf-8', errors='replace') if stdout else '',
+                    'stderr': stderr.decode('utf-8', errors='replace') if stderr else '',
+                    'returncode': proc.returncode,
+                }
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': f'bash 命令超时 ({timeout}s)',
+                    'returncode': -1,
+                }
+        except Exception as e:
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': str(e),
+                'returncode': -1,
+            }
+
+    async def execute_script(self, code: str, language: str = 'python',
+                             timeout: int = None, cwd: str = None) -> Dict[str, Any]:
+        """
+        执行脚本文件（支持 python/bash/node）
+
+        Args:
+            code: 脚本源码
+            language: 'python' | 'bash' | 'node'
+            timeout: 超时秒数
+            cwd: 工作目录
+
+        Returns:
+            dict with success, stdout, stderr, returncode
+        """
+        from src.utils.runtime import is_docker
+        if self.strict_mode and not is_docker():
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': 'execute_script() 仅在 Docker 容器内可用（或设置 strict_mode=False）',
+                'returncode': -1,
+            }
+
+        RUNNERS = {
+            'python': (sys.executable, '.py'),
+            'bash': (shutil.which('bash') or '/bin/sh', '.sh'),
+            'node': (shutil.which('node') or 'node', '.js'),
+        }
+        runner, suffix = RUNNERS.get(language, (sys.executable, '.py'))
+        timeout = timeout or self.default_timeout
+
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix=suffix, delete=False,
+            encoding='utf-8', dir=cwd
+        ) as f:
+            f.write(code)
+            temp_path = f.name
+
+        try:
+            if language == 'bash':
+                os.chmod(temp_path, 0o755)
+
+            proc = await asyncio.create_subprocess_exec(
+                runner, temp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+                return {
+                    'success': proc.returncode == 0,
+                    'stdout': stdout.decode('utf-8', errors='replace') if stdout else '',
+                    'stderr': stderr.decode('utf-8', errors='replace') if stderr else '',
+                    'returncode': proc.returncode,
+                }
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return {
+                    'success': False,
+                    'stdout': '',
+                    'stderr': f'脚本执行超时 ({timeout}s)',
+                    'returncode': -1,
+                }
+        except Exception as e:
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': str(e),
+                'returncode': -1,
+            }
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)

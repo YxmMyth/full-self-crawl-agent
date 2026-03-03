@@ -66,6 +66,19 @@ class ReflectAgent(AgentInterface):
         else:
             improvements = self._fallback_improvements(error_analysis)
 
+        # 4. Docker 模式：执行验证脚本测试新选择器
+        verified = False
+        from src.utils.runtime import is_docker
+        if is_docker() and improvements.get('selectors') and html_sample:
+            verified = await self._verify_selectors_with_script(
+                improvements['selectors'], html_sample
+            )
+            if verified:
+                logger.info("ReflectAgent: 验证脚本确认新选择器有效 ✓")
+            else:
+                logger.info("ReflectAgent: 验证脚本未能确认新选择器，建议 script 策略")
+                improvements.setdefault('strategy_type', 'script')
+
         result = {
             'success': True,
             'analysis': {
@@ -75,7 +88,8 @@ class ReflectAgent(AgentInterface):
             'improvements': improvements,
             'suggested_action': improvements.get('action', 'retry'),
             'new_selectors': improvements.get('selectors', {}),
-            'new_strategy': improvements.get('strategy', None)
+            'new_strategy': improvements.get('strategy', None),
+            'verified': verified,
         }
 
         # 添加降级信息
@@ -242,6 +256,54 @@ HTML 样本（关键元素）：
         except Exception as e:
             print(f"LLM 反思失败: {e}")
             return self._fallback_improvements(error_analysis)
+
+    async def _verify_selectors_with_script(self, selectors: Dict[str, str],
+                                             html: str) -> bool:
+        """
+        在 Docker 容器内执行验证脚本，测试建议的选择器是否真的能匹配到数据。
+
+        Returns:
+            True if at least one selector matches data
+        """
+        if not selectors or not html:
+            return False
+
+        import json as _json
+        selectors_json = _json.dumps(selectors, ensure_ascii=False)
+
+        verify_code = f'''import sys, json
+from bs4 import BeautifulSoup
+
+html = sys.stdin.read()
+soup = BeautifulSoup(html, 'html.parser')
+selectors = {selectors_json}
+
+results = {{}}
+for name, sel in selectors.items():
+    try:
+        matches = soup.select(sel)
+        texts = [m.get_text(strip=True)[:100] for m in matches[:5]]
+        results[name] = {{"count": len(matches), "samples": texts}}
+    except Exception as e:
+        results[name] = {{"count": 0, "error": str(e)}}
+
+print(json.dumps(results, ensure_ascii=False))
+'''
+
+        try:
+            from src.executors.executor import Sandbox
+            sandbox = Sandbox(strict_mode=False)
+            result = await sandbox.execute(verify_code, stdin_data=html, timeout=15)
+
+            if result['success'] and result['stdout']:
+                verification = _json.loads(result['stdout'])
+                total_matches = sum(v.get('count', 0) for v in verification.values())
+                logger.debug(f"选择器验证结果: {verification}")
+                return total_matches > 0
+        except Exception as e:
+            logger.debug(f"验证脚本执行失败: {e}")
+
+        return False
 
     def _extract_html_context_for_reflection(self, html: str) -> str:
         """

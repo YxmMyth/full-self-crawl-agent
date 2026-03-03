@@ -132,7 +132,8 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
                             'page_structure': sense_result.get('structure', {}),
                             'sense_features': sense_result.get('features', {}),
                             'reflect_hints': reflect_hints,
-                            'routing_decision': routing_decision}
+                            'routing_decision': routing_decision,
+                            'retry_count': attempt}
             if routing_decision:
                 plan_context['routing_guidance'] = {
                     'strategy': routing_decision.get('strategy', ''),
@@ -305,6 +306,13 @@ async def run_single_page_pipeline(context: Dict[str, Any]) -> Dict[str, Any]:
                     'suggested_strategy': improvements.get('strategy', ''),
                     'alternative_approaches': improvements.get('alternative_approaches', []),
                 }
+                # Docker 验证通过的选择器获得更高信任
+                if reflect_result.get('verified'):
+                    reflect_hints['verified'] = True
+                # Reflect 可推荐切换到 script 策略
+                if improvements.get('strategy_type'):
+                    reflect_hints['strategy_type'] = improvements['strategy_type']
+                    reflect_hints['change_strategy'] = True
                 print(f"   反思完成，将改进注入下次规划")
                 continue
 

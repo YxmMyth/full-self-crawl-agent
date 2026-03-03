@@ -28,6 +28,8 @@ class ActAgent(AgentInterface):
     async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         执行提取任务
+
+        策略链: LLM → CSS → Script(Docker) → LLM回退 → ZIP
         """
         browser = context.get('browser')
         selectors = context.get('selectors', {})
@@ -53,7 +55,17 @@ class ActAgent(AgentInterface):
                 except Exception as e:
                     logger.debug(f"LLM 主提取失败, 降级为 CSS: {e}")
 
-            # CSS 选择器提取（LLM 策略时作为补充；CSS 策略时作为主方法）
+            # Script 策略（Docker 模式独有）
+            if strategy_type == 'script' and not extracted_data:
+                try:
+                    extracted_data = await self._extract_with_script(
+                        browser, llm_client, spec.get('targets', []),
+                        context.get('html_snapshot', '')
+                    )
+                except Exception as e:
+                    logger.debug(f"Script 提取失败, 降级为 CSS: {e}")
+
+            # CSS 选择器提取（LLM/Script 策略时作为补充；CSS 策略时作为主方法）
             if not extracted_data:
                 if crawl_mode == 'multi_page':
                     extracted_data = await self._extract_with_pagination(
@@ -62,7 +74,22 @@ class ActAgent(AgentInterface):
                 else:
                     extracted_data = await self._extract_simple(browser, selectors, strategy)
 
-            # CSS 提取结果不佳时自动回退到 LLM（无论策略类型）
+            # CSS 提取结果不佳时尝试 script（Docker模式）再 LLM
+            if len(extracted_data) < 3 and strategy_type != 'script':
+                from src.utils.runtime import is_docker
+                if is_docker() and llm_client:
+                    try:
+                        script_data = await self._extract_with_script(
+                            browser, llm_client, spec.get('targets', []),
+                            context.get('html_snapshot', '')
+                        )
+                        if len(script_data) > len(extracted_data):
+                            logger.info(f"Script 提取更优: {len(script_data)} 条 (CSS: {len(extracted_data)} 条)")
+                            extracted_data = script_data
+                    except Exception as e:
+                        logger.debug(f"Script 提取回退失败: {e}")
+
+            # Script 和 CSS 都不够时回退到 LLM
             if llm_client and len(extracted_data) < 3 and strategy_type != 'llm':
                 try:
                     llm_data = await self._extract_with_llm(
@@ -517,6 +544,78 @@ class ActAgent(AgentInterface):
                 return []
         else:
             logger.warning(f"代码执行失败: {result['stderr'][:200]}")
+            return []
+
+    async def _extract_with_script(self, browser, llm_client, targets: List[Dict],
+                                   html_snapshot: str = '') -> List[Dict[str, Any]]:
+        """
+        Script 提取路径（Docker 模式独有）
+
+        让 LLM 生成一段 Python 提取脚本，通过 Sandbox.execute_script() 在容器内执行。
+        脚本读取 stdin 的 HTML，输出 JSON 到 stdout。
+        """
+        html = html_snapshot
+        if not html and browser:
+            try:
+                html = await browser.get_html()
+            except Exception:
+                html = ''
+        if not html:
+            return []
+
+        # 构建目标描述
+        target_desc = json.dumps(targets, ensure_ascii=False, default=str)[:2000]
+        html_sample = html[:8000]
+
+        prompt = f"""你是一个数据提取专家。请为以下 HTML 页面编写一段 Python 脚本来提取结构化数据。
+
+目标字段: {target_desc}
+
+HTML 样本:
+```html
+{html_sample}
+```
+
+要求:
+1. 脚本从 stdin 读取完整 HTML
+2. 使用 BeautifulSoup 解析
+3. 输出 JSON 数组到 stdout，每个元素是一条记录
+4. 只输出纯 Python 代码，不要 markdown 标记
+
+示例结构:
+```python
+import sys, json
+from bs4 import BeautifulSoup
+html = sys.stdin.read()
+soup = BeautifulSoup(html, 'html.parser')
+results = []
+# ... extraction logic ...
+print(json.dumps(results, ensure_ascii=False))
+```"""
+
+        if not llm_client:
+            return []
+
+        try:
+            response = await llm_client.chat(
+                [{"role": "user", "content": prompt}],
+                max_tokens=2048
+            )
+
+            # 清理 LLM 响应中的 markdown 代码块标记
+            code = response.strip()
+            if code.startswith('```python'):
+                code = code[len('```python'):].strip()
+            if code.startswith('```'):
+                code = code[3:].strip()
+            if code.endswith('```'):
+                code = code[:-3].strip()
+
+            # 通过 _execute_code 执行（走 Sandbox）
+            return await self._execute_code(code, html)
+
+        except Exception as e:
+            logger.warning(f"Script 提取失败: {e}")
             return []
 
     async def _extract_with_llm(self, browser, llm_client, targets: List[Dict],
