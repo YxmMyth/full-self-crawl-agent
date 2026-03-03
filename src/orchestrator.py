@@ -39,6 +39,17 @@ class SelfCrawlingAgent:
         self.config = load_config(config_path)
         self.state_manager = StateManager()
 
+        # 环境检测
+        from .utils.runtime import is_docker, get_runtime_info
+        self._runtime_info = get_runtime_info()
+        self.is_containerized = is_docker()
+        self.container_config = {
+            'is_containerized': self.is_containerized,
+            'runtime_info': self._runtime_info,
+        }
+        if self.is_containerized:
+            logger.info("🐳 Docker mode — sandbox strict_mode=False, 能力增强")
+
         # 初始化组件
         from .tools.llm_client import LLMClient
         from .executors.executor import Sandbox
@@ -81,8 +92,10 @@ class SelfCrawlingAgent:
         sandbox_cfg = self.config.get('sandbox', {})
         from .core.policy_manager import PolicyManager
         self.policy_manager = PolicyManager()
+        # Docker 模式下自动关闭 strict_mode
+        strict = sandbox_cfg.get('strict_mode', True) and not self.is_containerized
         self.sandbox = Sandbox(
-            strict_mode=sandbox_cfg.get('strict_mode', True),
+            strict_mode=strict,
             default_timeout=sandbox_cfg.get('timeout', 60),
             policy_manager=self.policy_manager
         )

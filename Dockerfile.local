@@ -1,0 +1,12 @@
+FROM crawl-agent:latest AS base
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DOCKER_CONTAINER=1
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends curl jq git && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null; exit 0
+RUN mkdir -p /workspace/tmp /workspace/scripts
+
+FROM base AS dev
+RUN pip install --no-cache-dir pytest pytest-asyncio pytest-cov 2>/dev/null; exit 0
+ENV BROWSER_HEADLESS=true
+CMD ["bash"]

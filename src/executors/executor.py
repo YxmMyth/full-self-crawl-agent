@@ -135,6 +135,7 @@ class CrawlExecutor:
     def __init__(self, agent_pool=None, llm_client=None):
         self.agent_pool = agent_pool
         self.llm_client = llm_client
+        self.sandbox = Sandbox()
 
     async def execute(self, spec: Dict[str, Any], url: str) -> Dict[str, Any]:
         from src.orchestrator import SelfCrawlingAgent
@@ -160,3 +161,24 @@ class CrawlExecutor:
             'error': result.get('error') if isinstance(result, dict) else 'unknown error',
             'raw_result': result,
         }
+
+
+def create_executor_for_environment(config: Dict[str, Any] = None) -> CrawlExecutor:
+    """
+    根据环境配置创建合适的执行器。
+
+    Args:
+        config: 环境配置字典，包含 is_containerized, sandbox_config 等
+
+    Returns:
+        CrawlExecutor 实例（内含正确配置的 Sandbox）
+    """
+    config = config or {}
+    is_container = config.get('is_containerized', False)
+    sandbox_cfg = config.get('sandbox_config', {})
+
+    executor = CrawlExecutor()
+    executor.sandbox = Sandbox(
+        strict_mode=sandbox_cfg.get('use_strict_validation', not is_container),
+    )
+    return executor

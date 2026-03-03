@@ -1,52 +1,40 @@
 version: '3.8'
 
 services:
-  # 开发环境
+  # 开发环境 — 挂载源码, 支持热更新和交互式调试
   dev:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
+      target: dev
     volumes:
       - .:/app
       - ./evidence:/app/evidence
       - ./states:/app/states
     environment:
-      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
-      - LLM_MODEL=glm-4
+      - API_GATEWAY_KEY=${API_GATEWAY_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-claude-opus-4-5-20251101}
+      - BROWSER_HEADLESS=true
+      - DOCKER_CONTAINER=1
     stdin_open: true
     tty: true
+    mem_limit: 4g
+    cpus: 2.0
 
-  # 沙箱执行环境
-  sandbox:
+  # 生产环境 — 代码打包进镜像, 独立运行
+  agent:
     build:
       context: .
-      dockerfile: Dockerfile.sandbox
+      dockerfile: Dockerfile
+      target: production
     volumes:
       - ./evidence:/app/evidence
       - ./states:/app/states
     environment:
-      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - API_GATEWAY_KEY=${API_GATEWAY_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-claude-opus-4-5-20251101}
       - BROWSER_HEADLESS=true
-    network_mode: none  # 无网络访问
-    mem_limit: 512m  # 限制内存
-    cpus: 1.0  # 限制 CPU
-
-  # 生产环境（可选）
-  production:
-    build:
-      context: .
-      dockerfile: Dockerfile.sandbox
-    volumes:
-      - ./evidence:/app/evidence
-      - ./states:/app/states
-    environment:
-      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
-      - LLM_MODEL=glm-4
-      - BROWSER_HEADLESS=true
-    mem_limit: 1g
+      - DOCKER_CONTAINER=1
+    mem_limit: 4g
     cpus: 2.0
     restart: unless-stopped
-
-volumes:
-  evidence:
-  states:

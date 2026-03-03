@@ -321,3 +321,44 @@ class StateManager:
         if 'per_url_results' not in self.current_state:
             self.current_state['per_url_results'] = {}
         self.current_state['per_url_results'][url] = result
+
+    # ---- 监控系统委托方法 ----
+    # StateManager 作为统一入口，委托给 MetricsCollector 和 ProgressTracker
+
+    def _ensure_monitoring(self):
+        """延迟初始化监控组件"""
+        if not hasattr(self, '_metrics_collector'):
+            from src.monitoring.metrics_collector import MetricsCollector
+            from src.monitoring.progress_tracker import ProgressTracker
+            self._metrics_collector = MetricsCollector()
+            self._progress_tracker = ProgressTracker()
+
+    async def update_progress(self, task_id, stage, progress, details=None, status=None):
+        """委托给 ProgressTracker"""
+        self._ensure_monitoring()
+        await self._progress_tracker.update_progress(task_id, stage, progress, details, status)
+
+    def get_task_progress(self, task_id):
+        """委托给 ProgressTracker"""
+        self._ensure_monitoring()
+        return self._progress_tracker.get_task_progress(task_id)
+
+    async def record_llm_call(self, provider, duration, success, tokens=None):
+        """委托给 MetricsCollector"""
+        self._ensure_monitoring()
+        await self._metrics_collector.record_llm_call_async(provider, duration, success, tokens)
+
+    async def record_page_load(self, url, duration, success):
+        """委托给 MetricsCollector"""
+        self._ensure_monitoring()
+        await self._metrics_collector.record_page_load_async(url, duration, success)
+
+    async def record_code_execution(self, duration, success, error=None):
+        """委托给 MetricsCollector"""
+        self._ensure_monitoring()
+        await self._metrics_collector.record_code_execution_async(duration, success, error)
+
+    def get_metrics_summary(self):
+        """委托给 MetricsCollector"""
+        self._ensure_monitoring()
+        return self._metrics_collector.get_metrics_summary()

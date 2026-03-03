@@ -32,29 +32,24 @@ def test_container_detection():
     """测试容器环境检测功能"""
     print("测试容器环境检测功能...")
 
-    # 从修改后的main.py导入SelfCrawlingAgent
-    from src.main import SelfCrawlingAgent
-
-    # 临时创建一个测试规格文件
-    spec = create_test_spec()
-
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(spec, f)
-        spec_path = f.name
+    from src.orchestrator import SelfCrawlingAgent
 
     try:
-        # 创建agent实例（这会触发容器检测）
-        agent = SelfCrawlingAgent(spec_path)
+        agent = SelfCrawlingAgent()
 
         print(f"是否检测到容器环境: {agent.is_containerized}")
         print(f"容器配置: {agent.container_config}")
-        print(f"使用的executor类型: {type(agent.executor.sandbox).__name__}")
+        print(f"使用的sandbox类型: {type(agent.sandbox).__name__}")
+
+        # 验证属性类型
+        assert isinstance(agent.is_containerized, bool)
+        assert isinstance(agent.container_config, dict)
+        assert 'is_containerized' in agent.container_config
 
         print("容器环境检测测试完成")
 
-    finally:
-        # 清理临时文件
-        os.unlink(spec_path)
+    except Exception as e:
+        raise
 
 def test_executor_creation():
     """测试根据环境创建合适的executor"""
@@ -70,6 +65,7 @@ def test_executor_creation():
 
     executor_container = create_executor_for_environment(container_config)
     print(f"容器环境executor沙箱类型: {type(executor_container.sandbox).__name__}")
+    assert executor_container.sandbox.strict_mode is False
 
     # 测试非容器环境
     non_container_config = {
@@ -79,27 +75,24 @@ def test_executor_creation():
 
     executor_local = create_executor_for_environment(non_container_config)
     print(f"本地环境executor沙箱类型: {type(executor_local.sandbox).__name__}")
+    assert executor_local.sandbox.strict_mode is True
 
     print("executor创建测试完成")
 
 def test_cli_options():
-    """测试CLI参数"""
+    """测试CLI参数中包含容器相关选项"""
     print("\n测试CLI参数功能...")
 
-    # 检查主程序是否包含docker相关参数
     import inspect
     import src.main
 
-    # 查看main函数的源码中是否包含docker相关参数
     source = inspect.getsource(src.main.main)
 
-    has_docker_params = (
-        '--docker' in source and
-        '--docker-image' in source and
-        '--memory-limit' in source
-    )
+    # 检查容器模式参数存在
+    has_container_param = '--container' in source
 
-    print(f"CLI包含docker参数: {has_docker_params}")
+    print(f"CLI包含container参数: {has_container_param}")
+    assert has_container_param, "CLI 应包含 --container 参数"
 
     print("CLI参数测试完成")
 
