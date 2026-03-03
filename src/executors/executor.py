@@ -1,12 +1,14 @@
 """
 代码执行器 — 精简版
 
-只有一个 Sandbox 类，通过 strict_mode 控制行为：
+Sandbox 类支持三种执行模式：
 - strict_mode=True  (本地开发): 校验危险代码后再 subprocess 执行
 - strict_mode=False (Docker容器): 只管超时，不限模块
+- docker_env 设置时: 通过 DockerEnvironment 在容器内执行（最强能力）
 """
 
 import asyncio
+import base64
 import subprocess
 import tempfile
 import os
@@ -34,13 +36,15 @@ class Sandbox:
 
     本地开发: Sandbox(strict_mode=True)   → 校验 + subprocess
     Docker:  Sandbox(strict_mode=False)  → 只管超时 + subprocess
+    Docker环境: Sandbox(docker_env=env)  → 在 Docker 容器内执行
     """
 
     def __init__(self, strict_mode: bool = True, default_timeout: int = 60,
-                 policy_manager=None):
+                 policy_manager=None, docker_env=None):
         self.strict_mode = strict_mode
         self.default_timeout = default_timeout
         self.policy_manager = policy_manager
+        self.docker_env = docker_env  # DockerEnvironment instance (optional)
 
     def validate_code(self, code: str) -> Tuple[bool, List[str]]:
         """校验代码安全性（仅 strict_mode 生效）"""
@@ -57,6 +61,10 @@ class Sandbox:
                       timeout: int = None) -> Dict[str, Any]:
         """执行 Python 代码"""
         timeout = timeout or self.default_timeout
+
+        # Docker 模式：在容器内执行，跳过本地安全检查
+        if self.docker_env:
+            return await self._execute_in_docker(code, stdin_data, timeout)
 
         # PolicyManager 策略检查（优先于 strict_mode 检查）
         if self.policy_manager:
@@ -125,6 +133,75 @@ class Sandbox:
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+
+    async def execute_bash(self, command: str, timeout: int = None) -> Dict[str, Any]:
+        """执行 bash 命令（仅 Docker 模式可用）"""
+        if not self.docker_env:
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': 'bash 执行需要 Docker 环境',
+                'returncode': -1,
+            }
+        timeout = timeout or self.default_timeout
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: self.docker_env.execute(command, timeout=timeout)
+        )
+        return {
+            'success': result['returncode'] == 0,
+            'stdout': result['output'] if result['returncode'] == 0 else '',
+            'stderr': result['output'] if result['returncode'] != 0 else '',
+            'returncode': result['returncode'],
+        }
+
+    async def _execute_in_docker(self, code: str, stdin_data: str = None,
+                                  timeout: int = 60) -> Dict[str, Any]:
+        """在 Docker 容器内执行 Python 代码"""
+        loop = asyncio.get_event_loop()
+
+        # Write code to container via base64 (avoids quoting issues)
+        encoded_code = base64.b64encode(code.encode('utf-8')).decode('ascii')
+        write_result = await loop.run_in_executor(
+            None,
+            lambda: self.docker_env.execute(
+                f"echo '{encoded_code}' | base64 -d > /workspace/_script.py",
+                timeout=30,
+            )
+        )
+        if write_result['returncode'] != 0:
+            return {
+                'success': False,
+                'stdout': '',
+                'stderr': f"写入脚本失败: {write_result['output']}",
+                'returncode': -1,
+            }
+
+        # If stdin_data provided, write it to a file too
+        run_cmd = "python3 /workspace/_script.py"
+        if stdin_data:
+            encoded_stdin = base64.b64encode(stdin_data.encode('utf-8')).decode('ascii')
+            await loop.run_in_executor(
+                None,
+                lambda: self.docker_env.execute(
+                    f"echo '{encoded_stdin}' | base64 -d > /workspace/_stdin.txt",
+                    timeout=30,
+                )
+            )
+            run_cmd = "python3 /workspace/_script.py < /workspace/_stdin.txt"
+
+        # Execute the script
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.docker_env.execute(run_cmd, timeout=timeout)
+        )
+
+        return {
+            'success': result['returncode'] == 0,
+            'stdout': result['output'] if result['returncode'] == 0 else '',
+            'stderr': result['output'] if result['returncode'] != 0 else '',
+            'returncode': result['returncode'],
+        }
 
 
 class CrawlExecutor:

@@ -129,7 +129,14 @@ class SelfCrawlingAgent:
             print(f"开始爬取模式: {crawl_mode}")
             print(f"目标 URL: {start_url}")
 
-            # 根据模式选择执行路径
+            # CrawlAgent 模式：使用 ReAct 循环 + Docker 执行
+            use_agent = inferred_spec.get('use_crawl_agent', False) or \
+                        getattr(self, 'config', {}).get('crawl_agent', {}).get('enabled', False)
+            if use_agent:
+                result = await self._run_crawl_agent(start_url, inferred_spec)
+                return result
+
+            # 根据模式选择执行路径（legacy pipeline）
             if crawl_mode == 'single_page':
                 result = await self._run_single_or_multi(start_url, crawl_mode)
             elif crawl_mode == 'multi_page':
@@ -188,6 +195,43 @@ class SelfCrawlingAgent:
             pass
         await self.browser.start()
         logger.info("[Recovery] 浏览器已重启")
+
+    async def _run_crawl_agent(self, start_url: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """使用 CrawlAgent ReAct 循环执行爬取（Docker 模式）"""
+        from .agents.crawl_agent import CrawlAgent, CrawlAgentConfig
+        from .environments.docker_env import DockerEnvironment, DockerEnvironmentConfig
+
+        agent_cfg = self.config.get('crawl_agent', {})
+        docker_cfg = self.config.get('docker', {})
+
+        print("🐳 启动 CrawlAgent 模式（Docker + ReAct 循环）")
+
+        env_config = DockerEnvironmentConfig(
+            image=docker_cfg.get('image', 'crawl-agent:latest'),
+            timeout=docker_cfg.get('command_timeout', 120),
+        )
+        docker_env = DockerEnvironment(env_config)
+
+        try:
+            crawl_config = CrawlAgentConfig(
+                step_limit=agent_cfg.get('step_limit', 25),
+                command_timeout=agent_cfg.get('command_timeout', 120),
+                max_tokens=agent_cfg.get('max_tokens', 4096),
+                temperature=agent_cfg.get('temperature', 0.3),
+            )
+            agent = CrawlAgent(
+                llm_client=self.llm_client,
+                docker_env=docker_env,
+                config=crawl_config,
+            )
+            result = await agent.run(start_url, spec)
+
+            print(f"CrawlAgent 完成: {result.get('metadata', {}).get('steps', '?')} 步, "
+                  f"{len(result.get('extracted_data', []))} 条数据")
+            return result
+
+        finally:
+            docker_env.cleanup()
 
     async def _run_single_or_multi(self, start_url: str, spec: Any):
         """单页或多页爬取（复用 pipeline.py 中的单页循环）"""

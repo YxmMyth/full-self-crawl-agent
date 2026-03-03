@@ -1,0 +1,27 @@
+FROM python:3.11-bookworm
+
+# System tools for debugging and data processing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    wget \
+    jq \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Playwright + Chromium (install deps first for bookworm compatibility)
+RUN pip install --no-cache-dir playwright==1.49.1 \
+    && playwright install --with-deps chromium
+
+# Common Python packages for extraction
+RUN pip install --no-cache-dir \
+    beautifulsoup4 \
+    lxml \
+    requests \
+    httpx \
+    parsel \
+    cssselect
+
+WORKDIR /workspace
+
+# Keep container alive (agent sends commands via docker exec)
+CMD ["sleep", "infinity"]
